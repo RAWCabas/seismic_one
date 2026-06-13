@@ -48,6 +48,21 @@ class _EarthquakeDashboardState extends State<EarthquakeDashboard> {
   String _currentSortRule = 'Newest First';
   bool _showSidebar = true;
   bool _showMap = true;
+  Map<String, dynamic>? _selectedQuake;
+  bool _onlyShowVisibleInMap = false;
+
+  List get _visibleEarthquakes {
+    if (!_onlyShowVisibleInMap) return _earthquakes;
+    try {
+      return _earthquakes.where((feature) {
+        final coords = feature['geometry']['coordinates'];
+        final point = LatLng((coords[1] as num).toDouble(), (coords[0] as num).toDouble());
+        return _mapController.camera.visibleBounds.contains(point);
+      }).toList();
+    } catch (e) {
+      return _earthquakes;
+    }
+  }
 
   @override
   void initState() {
@@ -411,7 +426,10 @@ class _EarthquakeDashboardState extends State<EarthquakeDashboard> {
   }
 
   List<Marker> _buildMarkers() {
-    return _earthquakes.map((feature) {
+    final List<Marker> normalMarkers = [];
+    final List<Marker> selectedMarkers = [];
+
+    for (var feature in _visibleEarthquakes) {
       final props = feature['properties'];
       final geometry = feature['geometry'];
       final coords = geometry['coordinates'];
@@ -420,39 +438,60 @@ class _EarthquakeDashboardState extends State<EarthquakeDashboard> {
       final double longitude = (coords[0] as num?)?.toDouble() ?? 0.0;
       final double latitude = (coords[1] as num?)?.toDouble() ?? 0.0;
 
+      bool isSelected = (_selectedQuake != null && _selectedQuake!['properties']['time'] == props['time']);
+
       Color alertColor = Colors.greenAccent;
-      double size = 20.0;
+      double size = 32.0;
 
       if (magnitude >= 4.0 && magnitude < 5.5) {
         alertColor = Colors.orangeAccent;
-        size = 30.0;
       } else if (magnitude >= 5.5) {
         alertColor = Colors.redAccent;
-        size = 40.0;
       }
 
-      return Marker(
+      if (isSelected) {
+        size = 55.0;
+      }
+
+      final marker = Marker(
         point: LatLng(latitude, longitude),
         width: size,
         height: size,
         child: GestureDetector(
-          onTap: () => _showEarthquakeDetails(feature),
+          onTap: () {
+            setState(() {
+              _selectedQuake = feature;
+            });
+            _showEarthquakeDetails(feature);
+          },
           child: Container(
             decoration: BoxDecoration(
-              color: alertColor.withValues(alpha: 0.6),
+              color: alertColor.withValues(alpha: isSelected ? 0.75 : 0.35),
               shape: BoxShape.circle,
-              border: Border.all(color: alertColor, width: 2),
+              border: Border.all(
+                color: isSelected ? Colors.white : alertColor, 
+                width: isSelected ? 3.0 : 2.0,
+              ),
               boxShadow: [
                 BoxShadow(
-                  color: alertColor.withValues(alpha: 0.4),
-                  blurRadius: 8,
+                  color: alertColor.withValues(alpha: isSelected ? 0.8 : 0.4),
+                  blurRadius: isSelected ? 12.0 : 8.0,
+                  spreadRadius: isSelected ? 2.0 : 0.0,
                 ),
               ],
             ),
           ),
         ),
       );
-    }).toList();
+
+      if (isSelected) {
+        selectedMarkers.add(marker);
+      } else {
+        normalMarkers.add(marker);
+      }
+    }
+
+    return [...normalMarkers, ...selectedMarkers];
   }
 
   void _zoomIn() {
@@ -467,6 +506,64 @@ class _EarthquakeDashboardState extends State<EarthquakeDashboard> {
 
   void _moveToRegion(LatLng center, double zoom) {
     _mapController.move(center, zoom);
+  }
+
+  void _showLegendPopup() {
+    showDialog(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          backgroundColor: const Color(0xFF1E1E1E),
+          title: const Text('Map Legend', style: TextStyle(color: Colors.white)),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              _buildLegendItem(Colors.greenAccent, 'Weak Tremors (Magnitude < 3.0)'),
+              const SizedBox(height: 12),
+              _buildLegendItem(Colors.orangeAccent, 'Moderate Tremors (Magnitude 3.0 to 4.9)'),
+              const SizedBox(height: 12),
+              _buildLegendItem(Colors.redAccent, 'Intense / Severe Tremors (Magnitude >= 5.0)'),
+              const SizedBox(height: 12),
+              Row(
+                children: [
+                  Container(
+                    width: 24,
+                    height: 4,
+                    color: Colors.orangeAccent,
+                  ),
+                  const SizedBox(width: 12),
+                  const Expanded(child: Text('Active Geological Tectonic Fault Lines', style: TextStyle(color: Colors.grey))),
+                ],
+              )
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Close', style: TextStyle(color: Colors.grey)),
+            ),
+          ],
+        );
+      }
+    );
+  }
+
+  Widget _buildLegendItem(Color color, String text) {
+    return Row(
+      children: [
+        Container(
+          width: 24,
+          height: 24,
+          decoration: BoxDecoration(
+            color: color.withValues(alpha: 0.5),
+            shape: BoxShape.circle,
+            border: Border.all(color: color, width: 2),
+          ),
+        ),
+        const SizedBox(width: 12),
+        Expanded(child: Text(text, style: const TextStyle(color: Colors.grey))),
+      ],
+    );
   }
 
   void _showRegionalMenu() {
@@ -597,6 +694,42 @@ class _EarthquakeDashboardState extends State<EarthquakeDashboard> {
                   },
                 ),
                 const SizedBox(height: 12),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF262626),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Column(
+                    children: [
+                      Text(
+                        'Showing: ${_visibleEarthquakes.length} Earthquakes',
+                        style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+                      ),
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          const Expanded(
+                            child: Text(
+                              'Only list Earthquakes Shown in Map',
+                              style: TextStyle(color: Colors.grey, fontSize: 12),
+                            ),
+                          ),
+                          Switch(
+                            value: _onlyShowVisibleInMap,
+                            onChanged: (val) {
+                              setState(() {
+                                _onlyShowVisibleInMap = val;
+                              });
+                            },
+                            activeColor: Colors.orangeAccent,
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 12),
                 const Text(
                   'SORT BY:',
                   style: TextStyle(
@@ -652,9 +785,9 @@ class _EarthquakeDashboardState extends State<EarthquakeDashboard> {
                     child: CircularProgressIndicator(color: Colors.redAccent),
                   )
                 : ListView.builder(
-                    itemCount: _earthquakes.length,
+                    itemCount: _visibleEarthquakes.length,
                     itemBuilder: (context, index) {
-                      final feature = _earthquakes[index];
+                      final feature = _visibleEarthquakes[index];
                       final props = feature['properties'];
                       final coords = feature['geometry']['coordinates'];
 
@@ -687,9 +820,12 @@ class _EarthquakeDashboardState extends State<EarthquakeDashboard> {
                         child: InkWell(
                           borderRadius: BorderRadius.circular(12),
                           onTap: () {
+                            setState(() {
+                              _selectedQuake = feature;
+                            });
                             _mapController.move(
                               LatLng(latitude, longitude),
-                              6.0,
+                              11.0,
                             );
                             _showEarthquakeDetails(feature);
                           },
@@ -783,11 +919,12 @@ class _EarthquakeDashboardState extends State<EarthquakeDashboard> {
         children: [
           FlutterMap(
             mapController: _mapController,
-            options: const MapOptions(
-              initialCenter: LatLng(0, 0),
+            options: MapOptions(
+              initialCenter: const LatLng(0, 0),
               initialZoom: 2.0,
               minZoom: 1.0,
               maxZoom: 18.0,
+              onPositionChanged: (position, hasGesture) => setState(() {}),
             ),
             children: [
               TileLayer(
@@ -808,6 +945,14 @@ class _EarthquakeDashboardState extends State<EarthquakeDashboard> {
                   backgroundColor: const Color(0xFF262626),
                   onPressed: _showRegionalMenu,
                   child: const Icon(Icons.public, color: Colors.white),
+                ),
+                const SizedBox(height: 16),
+                FloatingActionButton(
+                  heroTag: 'legend',
+                  mini: true,
+                  backgroundColor: const Color(0xFF1A1A1A),
+                  onPressed: _showLegendPopup,
+                  child: const Icon(Icons.legend_toggle_rounded, color: Colors.white),
                 ),
                 const SizedBox(height: 16),
                 FloatingActionButton(
