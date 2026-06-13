@@ -45,6 +45,10 @@ class _EarthquakeDashboardState extends State<EarthquakeDashboard> {
   DateTime _startDate = DateTime.now().subtract(const Duration(days: 1));
   DateTime _endDate = DateTime.now();
 
+  String _currentSortRule = 'Newest First';
+  bool _showSidebar = true;
+  bool _showMap = true;
+
   @override
   void initState() {
     super.initState();
@@ -54,7 +58,7 @@ class _EarthquakeDashboardState extends State<EarthquakeDashboard> {
   // Live Free USGS GeoJSON API Network Connection Layer
   Future<void> fetchEarthquakeData() async {
     final formattedStart = DateFormat('yyyy-MM-dd').format(_startDate);
-    final formattedEnd = DateFormat('yyyy-MM-dd').format(_endDate);
+    final formattedEnd = '${DateFormat('yyyy-MM-dd').format(_endDate)}T23:59:59';
 
     final url = Uri.parse(
       'https://earthquake.usgs.gov/fdsnws/event/1/query?format=geojson&starttime=$formattedStart&endtime=$formattedEnd',
@@ -66,6 +70,7 @@ class _EarthquakeDashboardState extends State<EarthquakeDashboard> {
         final data = json.decode(response.body);
         setState(() {
           _earthquakes = data['features'];
+          _sortEarthquakes();
           _isLoading = false;
         });
       } else {
@@ -81,6 +86,26 @@ class _EarthquakeDashboardState extends State<EarthquakeDashboard> {
     }
   }
 
+  void _sortEarthquakes() {
+    if (_currentSortRule == 'Newest First') {
+      _earthquakes.sort((a, b) => (b['properties']['time'] as int).compareTo(a['properties']['time'] as int));
+    } else if (_currentSortRule == 'Oldest First') {
+      _earthquakes.sort((a, b) => (a['properties']['time'] as int).compareTo(b['properties']['time'] as int));
+    } else if (_currentSortRule == 'Largest Magnitude') {
+      _earthquakes.sort((a, b) {
+        final magA = (a['properties']['mag'] as num?)?.toDouble() ?? 0.0;
+        final magB = (b['properties']['mag'] as num?)?.toDouble() ?? 0.0;
+        return magB.compareTo(magA);
+      });
+    } else if (_currentSortRule == 'Smallest Magnitude') {
+      _earthquakes.sort((a, b) {
+        final magA = (a['properties']['mag'] as num?)?.toDouble() ?? 0.0;
+        final magB = (b['properties']['mag'] as num?)?.toDouble() ?? 0.0;
+        return magA.compareTo(magB);
+      });
+    }
+  }
+
   void _showReportDialog() {
     showDialog(
       context: context,
@@ -88,7 +113,8 @@ class _EarthquakeDashboardState extends State<EarthquakeDashboard> {
         bool feltIt = true;
         DateTime? selectedDate = DateTime.now();
         TimeOfDay? selectedTime = TimeOfDay.now();
-        final TextEditingController locationController = TextEditingController();
+        final TextEditingController locationController =
+            TextEditingController();
 
         return StatefulBuilder(
           builder: (context, setStateDialog) {
@@ -156,7 +182,10 @@ class _EarthquakeDashboardState extends State<EarthquakeDashboard> {
               actions: [
                 TextButton(
                   onPressed: () => Navigator.pop(context),
-                  child: const Text('Cancel', style: TextStyle(color: Colors.grey)),
+                  child: const Text(
+                    'Cancel',
+                    style: TextStyle(color: Colors.grey),
+                  ),
                 ),
                 ElevatedButton(
                   style: ElevatedButton.styleFrom(
@@ -167,13 +196,18 @@ class _EarthquakeDashboardState extends State<EarthquakeDashboard> {
                     Navigator.pop(context);
                     ScaffoldMessenger.of(context).showSnackBar(
                       const SnackBar(
-                        content: Text('Thank you! Your report has been submitted locally.'),
+                        content: Text(
+                          'Thank you! Your report has been submitted locally.',
+                        ),
                         backgroundColor: Colors.green,
                         behavior: SnackBarBehavior.floating,
                       ),
                     );
                   },
-                  child: const Text('Submit', style: TextStyle(color: Colors.white)),
+                  child: const Text(
+                    'Submit',
+                    style: TextStyle(color: Colors.white),
+                  ),
                 ),
               ],
             );
@@ -187,17 +221,17 @@ class _EarthquakeDashboardState extends State<EarthquakeDashboard> {
     final props = feature['properties'];
     final geometry = feature['geometry'];
     final coords = geometry['coordinates'];
-    
+
     final double magnitude = (props['mag'] as num?)?.toDouble() ?? 0.0;
     final double longitude = (coords[0] as num?)?.toDouble() ?? 0.0;
     final double latitude = (coords[1] as num?)?.toDouble() ?? 0.0;
     final double depth = (coords[2] as num?)?.toDouble() ?? 0.0;
-    
+
     final int timeMillis = props['time'] ?? 0;
     final DateTime dateTime = DateTime.fromMillisecondsSinceEpoch(timeMillis);
-    
+
     final int tsunami = props['tsunami'] ?? 0;
-    
+
     Color alertColor = Colors.greenAccent;
     String intensity = "Weak";
     if (magnitude >= 4.0 && magnitude < 5.5) {
@@ -285,33 +319,55 @@ class _EarthquakeDashboardState extends State<EarthquakeDashboard> {
               const SizedBox(height: 24),
               const Divider(color: Colors.white12),
               const SizedBox(height: 16),
-              _buildDetailRow(Icons.calendar_today, 'Time & Date', DateFormat('yyyy-MM-dd HH:mm:ss').format(dateTime)),
-              _buildDetailRow(Icons.straighten, 'Depth', '${depth.toStringAsFixed(2)} km'),
-              _buildDetailRow(Icons.location_on, 'Coordinates', '${latitude.toStringAsFixed(4)}°, ${longitude.toStringAsFixed(4)}°'),
+              _buildDetailRow(
+                Icons.calendar_today,
+                'Time & Date',
+                DateFormat('yyyy-MM-dd HH:mm:ss').format(dateTime),
+              ),
+              _buildDetailRow(
+                Icons.straighten,
+                'Depth',
+                '${depth.toStringAsFixed(2)} km',
+              ),
+              _buildDetailRow(
+                Icons.location_on,
+                'Coordinates',
+                '${latitude.toStringAsFixed(4)}°, ${longitude.toStringAsFixed(4)}°',
+              ),
               const SizedBox(height: 16),
               Container(
                 padding: const EdgeInsets.all(12),
                 decoration: BoxDecoration(
-                  color: tsunami == 1 ? Colors.redAccent.withValues(alpha: 0.1) : Colors.greenAccent.withValues(alpha: 0.1),
+                  color: tsunami == 1
+                      ? Colors.redAccent.withValues(alpha: 0.1)
+                      : Colors.greenAccent.withValues(alpha: 0.1),
                   borderRadius: BorderRadius.circular(12),
                   border: Border.all(
-                    color: tsunami == 1 ? Colors.redAccent.withValues(alpha: 0.3) : Colors.greenAccent.withValues(alpha: 0.3),
+                    color: tsunami == 1
+                        ? Colors.redAccent.withValues(alpha: 0.3)
+                        : Colors.greenAccent.withValues(alpha: 0.3),
                   ),
                 ),
                 child: Row(
                   children: [
                     Icon(
-                      tsunami == 1 ? Icons.warning_amber_rounded : Icons.check_circle_outline,
-                      color: tsunami == 1 ? Colors.redAccent : Colors.greenAccent,
+                      tsunami == 1
+                          ? Icons.warning_amber_rounded
+                          : Icons.check_circle_outline,
+                      color: tsunami == 1
+                          ? Colors.redAccent
+                          : Colors.greenAccent,
                     ),
                     const SizedBox(width: 12),
                     Expanded(
                       child: Text(
-                        tsunami == 1 
-                            ? 'TSUNAMI WARNING ISSUED\nCheck local authorities for wave heights and evacuation orders.' 
+                        tsunami == 1
+                            ? 'TSUNAMI WARNING ISSUED\nCheck local authorities for wave heights and evacuation orders.'
                             : 'No Tsunami Warning',
                         style: TextStyle(
-                          color: tsunami == 1 ? Colors.redAccent : Colors.greenAccent,
+                          color: tsunami == 1
+                              ? Colors.redAccent
+                              : Colors.greenAccent,
                           fontWeight: FontWeight.w600,
                         ),
                       ),
@@ -359,14 +415,14 @@ class _EarthquakeDashboardState extends State<EarthquakeDashboard> {
       final props = feature['properties'];
       final geometry = feature['geometry'];
       final coords = geometry['coordinates'];
-      
+
       final double magnitude = (props['mag'] as num?)?.toDouble() ?? 0.0;
       final double longitude = (coords[0] as num?)?.toDouble() ?? 0.0;
       final double latitude = (coords[1] as num?)?.toDouble() ?? 0.0;
 
       Color alertColor = Colors.greenAccent;
       double size = 20.0;
-      
+
       if (magnitude >= 4.0 && magnitude < 5.5) {
         alertColor = Colors.orangeAccent;
         size = 30.0;
@@ -424,186 +480,297 @@ class _EarthquakeDashboardState extends State<EarthquakeDashboard> {
             ListTile(
               leading: const Icon(Icons.public, color: Colors.blueAccent),
               title: const Text('World'),
-              onTap: () { Navigator.pop(context); _moveToRegion(const LatLng(0, 0), 2.0); },
+              onTap: () {
+                Navigator.pop(context);
+                _moveToRegion(const LatLng(0, 0), 2.0);
+              },
             ),
             ListTile(
               leading: const Icon(Icons.public, color: Colors.greenAccent),
               title: const Text('North America'),
-              onTap: () { Navigator.pop(context); _moveToRegion(const LatLng(45.0, -100.0), 3.0); },
+              onTap: () {
+                Navigator.pop(context);
+                _moveToRegion(const LatLng(45.0, -100.0), 3.0);
+              },
             ),
             ListTile(
               leading: const Icon(Icons.public, color: Colors.greenAccent),
               title: const Text('South America'),
-              onTap: () { Navigator.pop(context); _moveToRegion(const LatLng(-15.0, -60.0), 3.0); },
+              onTap: () {
+                Navigator.pop(context);
+                _moveToRegion(const LatLng(-15.0, -60.0), 3.0);
+              },
             ),
             ListTile(
               leading: const Icon(Icons.public, color: Colors.orangeAccent),
               title: const Text('Europe'),
-              onTap: () { Navigator.pop(context); _moveToRegion(const LatLng(50.0, 10.0), 4.0); },
+              onTap: () {
+                Navigator.pop(context);
+                _moveToRegion(const LatLng(50.0, 10.0), 4.0);
+              },
             ),
             ListTile(
               leading: const Icon(Icons.public, color: Colors.orangeAccent),
               title: const Text('Africa'),
-              onTap: () { Navigator.pop(context); _moveToRegion(const LatLng(0.0, 20.0), 3.0); },
+              onTap: () {
+                Navigator.pop(context);
+                _moveToRegion(const LatLng(0.0, 20.0), 3.0);
+              },
             ),
             ListTile(
               leading: const Icon(Icons.public, color: Colors.redAccent),
               title: const Text('Asia'),
-              onTap: () { Navigator.pop(context); _moveToRegion(const LatLng(30.0, 100.0), 3.0); },
+              onTap: () {
+                Navigator.pop(context);
+                _moveToRegion(const LatLng(30.0, 100.0), 3.0);
+              },
             ),
             ListTile(
               leading: const Icon(Icons.public, color: Colors.blueAccent),
               title: const Text('Oceania'),
-              onTap: () { Navigator.pop(context); _moveToRegion(const LatLng(-25.0, 135.0), 3.0); },
+              onTap: () {
+                Navigator.pop(context);
+                _moveToRegion(const LatLng(-25.0, 135.0), 3.0);
+              },
             ),
           ],
         );
-      }
+      },
     );
   }
 
   Widget _buildSidebar() {
     return Container(
-      width: 360,
+      width: _showMap ? 360 : null,
       color: const Color(0xFF161616),
       child: Column(
         children: [
           Padding(
             padding: const EdgeInsets.all(16.0),
-            child: ElevatedButton.icon(
-              style: ElevatedButton.styleFrom(
-                backgroundColor: const Color(0xFF262626),
-                minimumSize: const Size.fromHeight(48),
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(8),
-                ),
-              ),
-              icon: const Icon(Icons.date_range, color: Colors.white),
-              label: Text(
-                '${DateFormat('MMM d').format(_startDate)} - ${DateFormat('MMM d').format(_endDate)}',
-                style: const TextStyle(color: Colors.white),
-              ),
-              onPressed: () async {
-                final picked = await showDateRangePicker(
-                  context: context,
-                  initialDateRange: DateTimeRange(start: _startDate, end: _endDate),
-                  firstDate: DateTime(2000),
-                  lastDate: DateTime.now(),
-                  builder: (context, child) {
-                    return Theme(
-                      data: Theme.of(context).copyWith(
-                        colorScheme: const ColorScheme.dark(
-                          primary: Colors.redAccent,
-                          onPrimary: Colors.white,
-                          surface: Color(0xFF1E1E1E),
-                          onSurface: Colors.white,
-                        ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                ElevatedButton.icon(
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFF262626),
+                    minimumSize: const Size.fromHeight(48),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                  ),
+                  icon: const Icon(Icons.date_range, color: Colors.white),
+                  label: Text(
+                    '${DateFormat('MMM d').format(_startDate)} - ${DateFormat('MMM d').format(_endDate)}',
+                    style: const TextStyle(color: Colors.white),
+                  ),
+                  onPressed: () async {
+                    final picked = await showDateRangePicker(
+                      context: context,
+                      initialDateRange: DateTimeRange(
+                        start: _startDate,
+                        end: _endDate,
                       ),
-                      child: child!,
+                      firstDate: DateTime(2000),
+                      lastDate: DateTime.now(),
+                      builder: (context, child) {
+                        return Theme(
+                          data: Theme.of(context).copyWith(
+                            colorScheme: const ColorScheme.dark(
+                              primary: Colors.redAccent,
+                              onPrimary: Colors.white,
+                              surface: Color(0xFF1E1E1E),
+                              onSurface: Colors.white,
+                            ),
+                          ),
+                          child: child!,
+                        );
+                      },
                     );
+                    if (picked != null) {
+                      setState(() {
+                        _startDate = picked.start;
+                        _endDate = picked.end;
+                        _isLoading = true;
+                      });
+                      fetchEarthquakeData();
+                    }
                   },
-                );
-                if (picked != null) {
-                  setState(() {
-                    _startDate = picked.start;
-                    _endDate = picked.end;
-                    _isLoading = true;
-                  });
-                  fetchEarthquakeData();
-                }
-              },
+                ),
+                const SizedBox(height: 12),
+                const Text(
+                  'SORT BY:',
+                  style: TextStyle(
+                    color: Colors.grey,
+                    fontSize: 12,
+                    fontWeight: FontWeight.bold,
+                    letterSpacing: 1.2,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                Container(
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF262626),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  padding: const EdgeInsets.symmetric(horizontal: 12),
+                  child: DropdownButtonHideUnderline(
+                    child: DropdownButton<String>(
+                      isExpanded: true,
+                      value: _currentSortRule,
+                      dropdownColor: const Color(0xFF1E1E1E),
+                      icon: const Icon(Icons.sort, color: Colors.white),
+                      style: const TextStyle(color: Colors.white),
+                      onChanged: (String? newValue) {
+                        if (newValue != null) {
+                          setState(() {
+                            _currentSortRule = newValue;
+                            _sortEarthquakes();
+                          });
+                        }
+                      },
+                      items: <String>[
+                        'Newest First',
+                        'Oldest First',
+                        'Largest Magnitude',
+                        'Smallest Magnitude'
+                      ].map<DropdownMenuItem<String>>((String value) {
+                        return DropdownMenuItem<String>(
+                          value: value,
+                          child: Text(value),
+                        );
+                      }).toList(),
+                    ),
+                  ),
+                ),
+              ],
             ),
           ),
           const Divider(height: 1, color: Colors.white12),
           Expanded(
-            child: _isLoading 
-              ? const Center(child: CircularProgressIndicator(color: Colors.redAccent))
-              : ListView.builder(
-                  itemCount: _earthquakes.length,
-                  itemBuilder: (context, index) {
-                    final feature = _earthquakes[index];
-                    final props = feature['properties'];
-                    final coords = feature['geometry']['coordinates'];
-                    
-                    final double magnitude = (props['mag'] as num?)?.toDouble() ?? 0.0;
-                    final double longitude = (coords[0] as num?)?.toDouble() ?? 0.0;
-                    final double latitude = (coords[1] as num?)?.toDouble() ?? 0.0;
-                    
-                    final int timeMillis = props['time'] ?? 0;
-                    final DateTime dateTime = DateTime.fromMillisecondsSinceEpoch(timeMillis);
+            child: _isLoading
+                ? const Center(
+                    child: CircularProgressIndicator(color: Colors.redAccent),
+                  )
+                : ListView.builder(
+                    itemCount: _earthquakes.length,
+                    itemBuilder: (context, index) {
+                      final feature = _earthquakes[index];
+                      final props = feature['properties'];
+                      final coords = feature['geometry']['coordinates'];
 
-                    Color alertColor = Colors.greenAccent;
-                    if (magnitude >= 4.0 && magnitude < 5.5) alertColor = Colors.orangeAccent;
-                    else if (magnitude >= 5.5) alertColor = Colors.redAccent;
+                      final double magnitude =
+                          (props['mag'] as num?)?.toDouble() ?? 0.0;
+                      final double longitude =
+                          (coords[0] as num?)?.toDouble() ?? 0.0;
+                      final double latitude =
+                          (coords[1] as num?)?.toDouble() ?? 0.0;
 
-                    return Card(
-                      color: const Color(0xFF1E1E1E),
-                      margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                      child: InkWell(
-                        borderRadius: BorderRadius.circular(12),
-                        onTap: () {
-                          _mapController.move(LatLng(latitude, longitude), 6.0);
-                          _showEarthquakeDetails(feature);
-                        },
-                        child: Padding(
-                          padding: const EdgeInsets.all(12.0),
-                          child: Row(
-                            children: [
-                              Container(
-                                width: 44,
-                                height: 44,
-                                decoration: BoxDecoration(
-                                  color: alertColor.withValues(alpha: 0.15),
-                                  shape: BoxShape.circle,
-                                  border: Border.all(color: alertColor, width: 2),
-                                ),
-                                child: Center(
-                                  child: Text(
-                                    magnitude.toStringAsFixed(1),
-                                    style: TextStyle(
+                      final int timeMillis = props['time'] ?? 0;
+                      final DateTime dateTime =
+                          DateTime.fromMillisecondsSinceEpoch(timeMillis);
+
+                      Color alertColor = Colors.greenAccent;
+                      if (magnitude >= 4.0 && magnitude < 5.5) {
+                        alertColor = Colors.orangeAccent;
+                      } else if (magnitude >= 5.5)
+                        alertColor = Colors.redAccent;
+
+                      return Card(
+                        color: const Color(0xFF1E1E1E),
+                        margin: const EdgeInsets.symmetric(
+                          horizontal: 16,
+                          vertical: 6,
+                        ),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        child: InkWell(
+                          borderRadius: BorderRadius.circular(12),
+                          onTap: () {
+                            _mapController.move(
+                              LatLng(latitude, longitude),
+                              6.0,
+                            );
+                            _showEarthquakeDetails(feature);
+                          },
+                          child: Padding(
+                            padding: const EdgeInsets.all(12.0),
+                            child: Row(
+                              children: [
+                                Container(
+                                  width: 44,
+                                  height: 44,
+                                  decoration: BoxDecoration(
+                                    color: alertColor.withValues(alpha: 0.15),
+                                    shape: BoxShape.circle,
+                                    border: Border.all(
                                       color: alertColor,
-                                      fontWeight: FontWeight.bold,
-                                      fontSize: 14,
+                                      width: 2,
+                                    ),
+                                  ),
+                                  child: Center(
+                                    child: Text(
+                                      magnitude.toStringAsFixed(1),
+                                      style: TextStyle(
+                                        color: alertColor,
+                                        fontWeight: FontWeight.bold,
+                                        fontSize: 14,
+                                      ),
                                     ),
                                   ),
                                 ),
-                              ),
-                              const SizedBox(width: 12),
-                              Expanded(
-                                child: Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    Text(
-                                      props['place'] ?? 'Unknown',
-                                      style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w600, fontSize: 14),
-                                      maxLines: 1,
-                                      overflow: TextOverflow.ellipsis,
-                                    ),
-                                    const SizedBox(height: 4),
-                                    Row(
-                                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                                      children: [
-                                        Text(
-                                          DateFormat('MMM d, HH:mm').format(dateTime),
-                                          style: const TextStyle(color: Colors.grey, fontSize: 12),
+                                const SizedBox(width: 12),
+                                Expanded(
+                                  child: Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
+                                    children: [
+                                      Text(
+                                        props['place'] ?? 'Unknown',
+                                        style: const TextStyle(
+                                          color: Colors.white,
+                                          fontWeight: FontWeight.w600,
+                                          fontSize: 14,
                                         ),
-                                        Text(
-                                          (props['status'] ?? '').toString().toUpperCase(),
-                                          style: TextStyle(color: alertColor, fontSize: 11, fontWeight: FontWeight.bold),
-                                        ),
-                                      ],
-                                    ),
-                                  ],
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
+                                      ),
+                                      const SizedBox(height: 4),
+                                      Row(
+                                        mainAxisAlignment:
+                                            MainAxisAlignment.spaceBetween,
+                                        children: [
+                                          Text(
+                                            DateFormat(
+                                              'MMM d, HH:mm',
+                                            ).format(dateTime),
+                                            style: const TextStyle(
+                                              color: Colors.grey,
+                                              fontSize: 12,
+                                            ),
+                                          ),
+                                          Text(
+                                            (props['status'] ?? '')
+                                                .toString()
+                                                .toUpperCase(),
+                                            style: TextStyle(
+                                              color: alertColor,
+                                              fontSize: 11,
+                                              fontWeight: FontWeight.bold,
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                    ],
+                                  ),
                                 ),
-                              ),
-                            ],
+                              ],
+                            ),
                           ),
                         ),
-                      ),
-                    );
-                  },
-                ),
+                      );
+                    },
+                  ),
           ),
         ],
       ),
@@ -627,9 +794,7 @@ class _EarthquakeDashboardState extends State<EarthquakeDashboard> {
                 urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
                 userAgentPackageName: 'com.example.seismic_one',
               ),
-              MarkerLayer(
-                markers: _buildMarkers(),
-              ),
+              MarkerLayer(markers: _buildMarkers()),
             ],
           ),
           Positioned(
@@ -690,6 +855,28 @@ class _EarthquakeDashboardState extends State<EarthquakeDashboard> {
         ),
         actions: [
           IconButton(
+            icon: Icon(
+              _showSidebar ? Icons.dashboard_rounded : Icons.dashboard_outlined,
+              color: _showSidebar ? Colors.orangeAccent : Colors.white,
+            ),
+            tooltip: 'Toggle Sidebar',
+            onPressed: () {
+              if (_showSidebar && !_showMap) return;
+              setState(() => _showSidebar = !_showSidebar);
+            },
+          ),
+          IconButton(
+            icon: Icon(
+              _showMap ? Icons.map_rounded : Icons.map_outlined,
+              color: _showMap ? Colors.orangeAccent : Colors.white,
+            ),
+            tooltip: 'Toggle Map',
+            onPressed: () {
+              if (_showMap && !_showSidebar) return;
+              setState(() => _showMap = !_showMap);
+            },
+          ),
+          IconButton(
             icon: const Icon(Icons.refresh_rounded, color: Colors.white),
             tooltip: 'Refresh Live Feed',
             onPressed: () {
@@ -701,8 +888,10 @@ class _EarthquakeDashboardState extends State<EarthquakeDashboard> {
       ),
       body: Row(
         children: [
-          _buildSidebar(),
-          _buildMapPane(),
+          if (_showSidebar)
+            _showMap ? _buildSidebar() : Expanded(child: _buildSidebar()),
+          if (_showMap)
+            _buildMapPane(),
         ],
       ),
     );
