@@ -232,62 +232,50 @@ class _EarthquakeDashboardState extends State<EarthquakeDashboard> {
     );
   }
 
-  void _showEarthquakeDetails(Map<String, dynamic> feature) {
-    final props = feature['properties'];
-    final geometry = feature['geometry'];
+  Widget _buildFloatingInfoCard() {
+    if (_selectedQuake == null) return const SizedBox.shrink();
+    final props = _selectedQuake!['properties'];
+    final geometry = _selectedQuake!['geometry'];
     final coords = geometry['coordinates'];
 
     final double magnitude = (props['mag'] as num?)?.toDouble() ?? 0.0;
     final double longitude = (coords[0] as num?)?.toDouble() ?? 0.0;
     final double latitude = (coords[1] as num?)?.toDouble() ?? 0.0;
     final double depth = (coords[2] as num?)?.toDouble() ?? 0.0;
-
     final int timeMillis = props['time'] ?? 0;
     final DateTime dateTime = DateTime.fromMillisecondsSinceEpoch(timeMillis);
-
     final int tsunami = props['tsunami'] ?? 0;
 
     Color alertColor = Colors.greenAccent;
-    String intensity = "Weak";
+    String intensity = 'Weak';
     if (magnitude >= 4.0 && magnitude < 5.5) {
       alertColor = Colors.orangeAccent;
-      intensity = "Moderate";
+      intensity = 'Moderate';
     } else if (magnitude >= 5.5) {
       alertColor = Colors.redAccent;
-      intensity = "Intense";
+      intensity = 'Intense';
     }
 
-    showModalBottomSheet(
-      context: context,
-      backgroundColor: Colors.transparent,
-      isScrollControlled: true,
-      builder: (context) {
-        return Container(
-          decoration: const BoxDecoration(
-            color: Color(0xFF1A1A1A),
-            borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+    return Positioned(
+      bottom: 16,
+      left: 16,
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 380, maxHeight: 250),
+        child: Container(
+          decoration: BoxDecoration(
+            color: const Color(0xEE1A1A1A),
+            borderRadius: BorderRadius.circular(16),
           ),
-          padding: const EdgeInsets.all(24),
+          padding: const EdgeInsets.all(16),
           child: Column(
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Center(
-                child: Container(
-                  width: 40,
-                  height: 4,
-                  decoration: BoxDecoration(
-                    color: Colors.grey[800],
-                    borderRadius: BorderRadius.circular(2),
-                  ),
-                ),
-              ),
-              const SizedBox(height: 24),
               Row(
                 children: [
                   Container(
-                    width: 60,
-                    height: 60,
+                    width: 48,
+                    height: 48,
                     decoration: BoxDecoration(
                       color: alertColor.withValues(alpha: 0.15),
                       shape: BoxShape.circle,
@@ -299,12 +287,12 @@ class _EarthquakeDashboardState extends State<EarthquakeDashboard> {
                         style: TextStyle(
                           color: alertColor,
                           fontWeight: FontWeight.bold,
-                          fontSize: 20,
+                          fontSize: 16,
                         ),
                       ),
                     ),
                   ),
-                  const SizedBox(width: 16),
+                  const SizedBox(width: 12),
                   Expanded(
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
@@ -312,89 +300,70 @@ class _EarthquakeDashboardState extends State<EarthquakeDashboard> {
                         Text(
                           props['place'] ?? 'Unknown Location',
                           style: const TextStyle(
-                            fontSize: 18,
+                            fontSize: 14,
                             fontWeight: FontWeight.bold,
                             color: Colors.white,
                           ),
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
                         ),
-                        const SizedBox(height: 4),
                         Text(
-                          'Intensity: $intensity',
-                          style: TextStyle(
-                            fontSize: 14,
-                            color: alertColor,
-                            fontWeight: FontWeight.w600,
-                          ),
+                          intensity,
+                          style: TextStyle(fontSize: 12, color: alertColor, fontWeight: FontWeight.w600),
                         ),
                       ],
                     ),
                   ),
+                  IconButton(
+                    icon: const Icon(Icons.close, color: Colors.grey, size: 18),
+                    onPressed: () => setState(() => _selectedQuake = null),
+                    padding: EdgeInsets.zero,
+                    constraints: const BoxConstraints(),
+                  ),
                 ],
               ),
-              const SizedBox(height: 24),
-              const Divider(color: Colors.white12),
-              const SizedBox(height: 16),
-              _buildDetailRow(
-                Icons.calendar_today,
-                'Time & Date',
-                DateFormat('yyyy-MM-dd HH:mm:ss').format(dateTime),
+              const Divider(color: Colors.white12, height: 16),
+              Text(
+                '🕐 ${DateFormat('yyyy-MM-dd HH:mm').format(dateTime)}  |  📍 ${latitude.toStringAsFixed(3)}°, ${longitude.toStringAsFixed(3)}°  |  ⬇ ${depth.toStringAsFixed(1)} km',
+                style: const TextStyle(color: Colors.grey, fontSize: 11),
               ),
-              _buildDetailRow(
-                Icons.straighten,
-                'Depth',
-                '${depth.toStringAsFixed(2)} km',
-              ),
-              _buildDetailRow(
-                Icons.location_on,
-                'Coordinates',
-                '${latitude.toStringAsFixed(4)}°, ${longitude.toStringAsFixed(4)}°',
-              ),
-              const SizedBox(height: 16),
+              const SizedBox(height: 8),
               Container(
-                padding: const EdgeInsets.all(12),
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
                 decoration: BoxDecoration(
                   color: tsunami == 1
-                      ? Colors.redAccent.withValues(alpha: 0.1)
+                      ? Colors.redAccent.withValues(alpha: 0.12)
                       : Colors.greenAccent.withValues(alpha: 0.1),
-                  borderRadius: BorderRadius.circular(12),
+                  borderRadius: BorderRadius.circular(8),
                   border: Border.all(
                     color: tsunami == 1
-                        ? Colors.redAccent.withValues(alpha: 0.3)
+                        ? Colors.redAccent.withValues(alpha: 0.4)
                         : Colors.greenAccent.withValues(alpha: 0.3),
                   ),
                 ),
                 child: Row(
                   children: [
                     Icon(
-                      tsunami == 1
-                          ? Icons.warning_amber_rounded
-                          : Icons.check_circle_outline,
-                      color: tsunami == 1
-                          ? Colors.redAccent
-                          : Colors.greenAccent,
+                      tsunami == 1 ? Icons.warning_amber_rounded : Icons.check_circle_outline,
+                      color: tsunami == 1 ? Colors.redAccent : Colors.greenAccent,
+                      size: 16,
                     ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: Text(
-                        tsunami == 1
-                            ? 'TSUNAMI WARNING ISSUED\nCheck local authorities for wave heights and evacuation orders.'
-                            : 'No Tsunami Warning',
-                        style: TextStyle(
-                          color: tsunami == 1
-                              ? Colors.redAccent
-                              : Colors.greenAccent,
-                          fontWeight: FontWeight.w600,
-                        ),
+                    const SizedBox(width: 8),
+                    Text(
+                      tsunami == 1 ? 'TSUNAMI WARNING ISSUED' : 'No Tsunami Warning',
+                      style: TextStyle(
+                        color: tsunami == 1 ? Colors.redAccent : Colors.greenAccent,
+                        fontWeight: FontWeight.w700,
+                        fontSize: 12,
                       ),
                     ),
                   ],
                 ),
               ),
-              const SizedBox(height: 32),
             ],
           ),
-        );
-      },
+        ),
+      ),
     );
   }
 
@@ -428,6 +397,14 @@ class _EarthquakeDashboardState extends State<EarthquakeDashboard> {
   List<Marker> _buildMarkers() {
     final List<Marker> normalMarkers = [];
     final List<Marker> selectedMarkers = [];
+    // Guard: if the map widget hasn't fully rendered yet, fall back to a safe
+    // default zoom value so the camera.zoom access never throws a red screen.
+    double currentZoom;
+    try {
+      currentZoom = _mapController.camera.zoom;
+    } catch (_) {
+      currentZoom = 4.0;
+    }
 
     for (var feature in _visibleEarthquakes) {
       final props = feature['properties'];
@@ -438,47 +415,38 @@ class _EarthquakeDashboardState extends State<EarthquakeDashboard> {
       final double longitude = (coords[0] as num?)?.toDouble() ?? 0.0;
       final double latitude = (coords[1] as num?)?.toDouble() ?? 0.0;
 
-      bool isSelected = (_selectedQuake != null && _selectedQuake!['properties']['time'] == props['time']);
+      final bool isSelected = (_selectedQuake != null && _selectedQuake!['properties']['time'] == props['time']);
 
       Color alertColor = Colors.greenAccent;
-      double size = 32.0;
-
       if (magnitude >= 4.0 && magnitude < 5.5) {
         alertColor = Colors.orangeAccent;
       } else if (magnitude >= 5.5) {
         alertColor = Colors.redAccent;
       }
 
-      if (isSelected) {
-        size = 55.0;
-      }
+      final double markerSize = isSelected ? 40.0 : (14.0 + (currentZoom * 1.2)).clamp(14.0, 28.0);
 
       final marker = Marker(
         point: LatLng(latitude, longitude),
-        width: size,
-        height: size,
+        width: markerSize,
+        height: markerSize,
         child: GestureDetector(
-          onTap: () {
-            setState(() {
-              _selectedQuake = feature;
-            });
-            _showEarthquakeDetails(feature);
-          },
+          onTap: () => setState(() => _selectedQuake = feature),
           child: Container(
             decoration: BoxDecoration(
               color: alertColor.withValues(alpha: isSelected ? 0.75 : 0.35),
               shape: BoxShape.circle,
               border: Border.all(
-                color: isSelected ? Colors.white : alertColor, 
-                width: isSelected ? 3.0 : 2.0,
+                color: isSelected ? Colors.white : alertColor,
+                width: isSelected ? 2.5 : 1.5,
               ),
-              boxShadow: [
+              boxShadow: isSelected ? [
                 BoxShadow(
-                  color: alertColor.withValues(alpha: isSelected ? 0.8 : 0.4),
-                  blurRadius: isSelected ? 12.0 : 8.0,
-                  spreadRadius: isSelected ? 2.0 : 0.0,
+                  color: alertColor.withValues(alpha: 0.7),
+                  blurRadius: 10,
+                  spreadRadius: 2,
                 ),
-              ],
+              ] : null,
             ),
           ),
         ),
@@ -825,9 +793,8 @@ class _EarthquakeDashboardState extends State<EarthquakeDashboard> {
                             });
                             _mapController.move(
                               LatLng(latitude, longitude),
-                              11.0,
+                              8.0,
                             );
-                            _showEarthquakeDetails(feature);
                           },
                           child: Padding(
                             padding: const EdgeInsets.all(12.0),
@@ -925,6 +892,7 @@ class _EarthquakeDashboardState extends State<EarthquakeDashboard> {
               minZoom: 1.0,
               maxZoom: 18.0,
               onPositionChanged: (position, hasGesture) => setState(() {}),
+              onTap: (tapPosition, point) => setState(() { _selectedQuake = null; }),
             ),
             children: [
               TileLayer(
@@ -934,6 +902,7 @@ class _EarthquakeDashboardState extends State<EarthquakeDashboard> {
               MarkerLayer(markers: _buildMarkers()),
             ],
           ),
+          _buildFloatingInfoCard(),
           Positioned(
             top: 16,
             right: 16,
