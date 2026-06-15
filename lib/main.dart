@@ -9,6 +9,20 @@ void main() {
   runApp(const SeismicOneApp());
 }
 
+// ─── Chat Message Model ────────────────────────────────────────────────────────
+class ChatMessage {
+  final String role; // 'user' | 'assistant'
+  final String content;
+  final DateTime timestamp;
+
+  const ChatMessage({
+    required this.role,
+    required this.content,
+    required this.timestamp,
+  });
+}
+
+// ─── Root Application ──────────────────────────────────────────────────────────
 class SeismicOneApp extends StatelessWidget {
   const SeismicOneApp({super.key});
 
@@ -30,6 +44,7 @@ class SeismicOneApp extends StatelessWidget {
   }
 }
 
+// ─── Dashboard Widget ─────────────────────────────────────────────────────────
 class EarthquakeDashboard extends StatefulWidget {
   const EarthquakeDashboard({super.key});
 
@@ -38,28 +53,42 @@ class EarthquakeDashboard extends StatefulWidget {
 }
 
 class _EarthquakeDashboardState extends State<EarthquakeDashboard> {
+  // ─── Seismic Data State ───────────────────────────────────────────────────────
   List _earthquakes = [];
   bool _isLoading = true;
   final MapController _mapController = MapController();
 
   DateTime _startDate = DateTime.now().subtract(const Duration(days: 1));
   DateTime _endDate = DateTime.now();
-
   String _currentSortRule = 'Newest First';
-  bool _showSidebar = true;
-  bool _showMap = true;
   Map<String, dynamic>? _selectedQuake;
   bool _onlyShowVisibleInMap = false;
 
+  // ─── Tri-Pane Visibility State Flags ─────────────────────────────────────────
+  bool _showSidebar = true;
+  bool _showMap = true;
+  bool _showAIChat = true;
+
+  // ─── Groq AI Configuration ────────────────────────────────────────────────────
+  final String _groqApiKey =
+      "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";
+  final List<ChatMessage> _chatHistory = [];
+  final TextEditingController _aiInputController = TextEditingController();
+  bool _isAiLoading = false;
+
+  // ─── Computed: Visible Earthquakes ───────────────────────────────────────────
   List get _visibleEarthquakes {
     if (!_onlyShowVisibleInMap) return _earthquakes;
     try {
       return _earthquakes.where((feature) {
         final coords = feature['geometry']['coordinates'];
-        final point = LatLng((coords[1] as num).toDouble(), (coords[0] as num).toDouble());
+        final point = LatLng(
+          (coords[1] as num).toDouble(),
+          (coords[0] as num).toDouble(),
+        );
         return _mapController.camera.visibleBounds.contains(point);
       }).toList();
-    } catch (e) {
+    } catch (_) {
       return _earthquakes;
     }
   }
@@ -70,13 +99,21 @@ class _EarthquakeDashboardState extends State<EarthquakeDashboard> {
     fetchEarthquakeData();
   }
 
-  // Live Free USGS GeoJSON API Network Connection Layer
+  @override
+  void dispose() {
+    _aiInputController.dispose();
+    super.dispose();
+  }
+
+  // ─── USGS GeoJSON Live Fetch ──────────────────────────────────────────────────
   Future<void> fetchEarthquakeData() async {
     final formattedStart = DateFormat('yyyy-MM-dd').format(_startDate);
-    final formattedEnd = '${DateFormat('yyyy-MM-dd').format(_endDate)}T23:59:59';
+    final formattedEnd =
+        '${DateFormat('yyyy-MM-dd').format(_endDate)}T23:59:59';
 
     final url = Uri.parse(
-      'https://earthquake.usgs.gov/fdsnws/event/1/query?format=geojson&starttime=$formattedStart&endtime=$formattedEnd',
+      'https://earthquake.usgs.gov/fdsnws/event/1/query?format=geojson'
+      '&starttime=$formattedStart&endtime=$formattedEnd',
     );
 
     try {
@@ -89,23 +126,24 @@ class _EarthquakeDashboardState extends State<EarthquakeDashboard> {
           _isLoading = false;
         });
       } else {
-        setState(() {
-          _isLoading = false;
-        });
+        setState(() => _isLoading = false);
       }
     } catch (error) {
       debugPrint("Error fetching seismic data: $error");
-      setState(() {
-        _isLoading = false;
-      });
+      setState(() => _isLoading = false);
     }
   }
 
+  // ─── Sort Logic ───────────────────────────────────────────────────────────────
   void _sortEarthquakes() {
     if (_currentSortRule == 'Newest First') {
-      _earthquakes.sort((a, b) => (b['properties']['time'] as int).compareTo(a['properties']['time'] as int));
+      _earthquakes.sort((a, b) =>
+          (b['properties']['time'] as int)
+              .compareTo(a['properties']['time'] as int));
     } else if (_currentSortRule == 'Oldest First') {
-      _earthquakes.sort((a, b) => (a['properties']['time'] as int).compareTo(b['properties']['time'] as int));
+      _earthquakes.sort((a, b) =>
+          (a['properties']['time'] as int)
+              .compareTo(b['properties']['time'] as int));
     } else if (_currentSortRule == 'Largest Magnitude') {
       _earthquakes.sort((a, b) {
         final magA = (a['properties']['mag'] as num?)?.toDouble() ?? 0.0;
@@ -121,6 +159,109 @@ class _EarthquakeDashboardState extends State<EarthquakeDashboard> {
     }
   }
 
+  // ─── Groq AI Network Layer ────────────────────────────────────────────────────
+  Future<void> _sendMessageToAi(String userText) async {
+    if (userText.trim().isEmpty) return;
+
+    setState(() {
+      _chatHistory.add(ChatMessage(
+        role: 'user',
+        content: userText.trim(),
+        timestamp: DateTime.now(),
+      ));
+      _isAiLoading = true;
+    });
+
+    _aiInputController.clear();
+
+    // Build a context-aware system prompt from selected epicenter metadata
+    final String baseSystemPrompt;
+    if (_selectedQuake != null) {
+      final props = _selectedQuake!['properties'];
+      final coords = _selectedQuake!['geometry']['coordinates'];
+      final double magnitude = (props['mag'] as num?)?.toDouble() ?? 0.0;
+      final double depth = (coords[2] as num?)?.toDouble() ?? 0.0;
+      final String location = props['place'] ?? 'Unknown Location';
+
+      baseSystemPrompt = '''You are SeismicOne AI — an elite emergency response analyst and seismology expert embedded inside a live earthquake monitoring dashboard.
+
+ACTIVE EPICENTER CONTEXT (inject into all reasoning):
+  • Location  : $location
+  • Magnitude : M${magnitude.toStringAsFixed(1)}
+  • Depth     : ${depth.toStringAsFixed(1)} km
+
+Use this seismic telemetry data as your primary reasoning context. Provide concise, expert-level emergency analysis, risk assessments, safety recommendations, and actionable guidance based on these live parameters. Respond in clear, structured language suitable for emergency responders and the general public.''';
+    } else {
+      baseSystemPrompt =
+          '''You are SeismicOne AI — an elite emergency response analyst and seismology expert embedded inside a live earthquake monitoring dashboard.
+
+No epicenter is currently selected. Answer general seismology questions, explain earthquake risks, discuss preparedness strategies, and interpret USGS data. Stay focused on earthquake science and emergency response topics.''';
+    }
+
+    try {
+      final response = await http.post(
+        Uri.parse('https://api.groq.com/openai/v1/chat/completions'),
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer $_groqApiKey',
+        },
+        body: json.encode({
+          'model': 'llama3-8b-8192',
+          'messages': [
+            {
+              'role': 'system',
+              'content': baseSystemPrompt,
+            },
+            {
+              'role': 'user',
+              'content': userText.trim(),
+            },
+          ],
+          'temperature': 0.5,
+          'max_tokens': 1024,
+        }),
+      );
+
+      if (response.statusCode == 200) {
+        final responseData = json.decode(response.body);
+        final aiText = responseData['choices'][0]['message']['content'] ??
+            'Unable to analyze telemetry.';
+        setState(() {
+          _chatHistory.add(ChatMessage(
+            role: 'assistant',
+            content: aiText,
+            timestamp: DateTime.now(),
+          ));
+          _isAiLoading = false;
+        });
+      } else {
+        final errorBody = json.decode(response.body);
+        final errorMsg =
+            errorBody['error']?['message'] ?? 'HTTP ${response.statusCode}';
+        setState(() {
+          _chatHistory.add(ChatMessage(
+            role: 'assistant',
+            content:
+                '⚠️ Groq API error: $errorMsg\n\nVerify your API key and network connection.',
+            timestamp: DateTime.now(),
+          ));
+          _isAiLoading = false;
+        });
+      }
+    } catch (e) {
+      setState(() {
+        _chatHistory.add(ChatMessage(
+          role: 'assistant',
+          content:
+              '🔌 Network drop detected. Check your internet connection and try again.\n\nError: $e',
+          timestamp: DateTime.now(),
+        ));
+        _isAiLoading = false;
+      });
+    }
+  }
+
+  // ─── Report Dialog ────────────────────────────────────────────────────────────
   void _showReportDialog() {
     showDialog(
       context: context,
@@ -143,11 +284,8 @@ class _EarthquakeDashboardState extends State<EarthquakeDashboard> {
                     SwitchListTile(
                       title: const Text('Did you feel it?'),
                       value: feltIt,
-                      onChanged: (value) {
-                        setStateDialog(() {
-                          feltIt = value;
-                        });
-                      },
+                      onChanged: (value) =>
+                          setStateDialog(() => feltIt = value),
                       activeThumbColor: Colors.redAccent,
                     ),
                     const SizedBox(height: 16),
@@ -197,32 +335,25 @@ class _EarthquakeDashboardState extends State<EarthquakeDashboard> {
               actions: [
                 TextButton(
                   onPressed: () => Navigator.pop(context),
-                  child: const Text(
-                    'Cancel',
-                    style: TextStyle(color: Colors.grey),
-                  ),
+                  child: const Text('Cancel',
+                      style: TextStyle(color: Colors.grey)),
                 ),
                 ElevatedButton(
                   style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.redAccent,
-                  ),
+                      backgroundColor: Colors.redAccent),
                   onPressed: () {
-                    // Locally acknowledge the report since there is no backend
                     Navigator.pop(context);
                     ScaffoldMessenger.of(context).showSnackBar(
                       const SnackBar(
                         content: Text(
-                          'Thank you! Your report has been submitted locally.',
-                        ),
+                            'Thank you! Your report has been submitted locally.'),
                         backgroundColor: Colors.green,
                         behavior: SnackBarBehavior.floating,
                       ),
                     );
                   },
-                  child: const Text(
-                    'Submit',
-                    style: TextStyle(color: Colors.white),
-                  ),
+                  child: const Text('Submit',
+                      style: TextStyle(color: Colors.white)),
                 ),
               ],
             );
@@ -232,11 +363,11 @@ class _EarthquakeDashboardState extends State<EarthquakeDashboard> {
     );
   }
 
+  // ─── Floating Info Card (Map Overlay) ────────────────────────────────────────
   Widget _buildFloatingInfoCard() {
     if (_selectedQuake == null) return const SizedBox.shrink();
     final props = _selectedQuake!['properties'];
-    final geometry = _selectedQuake!['geometry'];
-    final coords = geometry['coordinates'];
+    final coords = _selectedQuake!['geometry']['coordinates'];
 
     final double magnitude = (props['mag'] as num?)?.toDouble() ?? 0.0;
     final double longitude = (coords[0] as num?)?.toDouble() ?? 0.0;
@@ -260,11 +391,19 @@ class _EarthquakeDashboardState extends State<EarthquakeDashboard> {
       bottom: 16,
       left: 16,
       child: ConstrainedBox(
-        constraints: const BoxConstraints(maxWidth: 380, maxHeight: 250),
+        constraints: const BoxConstraints(maxWidth: 350),
         child: Container(
           decoration: BoxDecoration(
             color: const Color(0xEE1A1A1A),
             borderRadius: BorderRadius.circular(16),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withValues(alpha: 0.6),
+                blurRadius: 16,
+                spreadRadius: 2,
+                offset: const Offset(0, 4),
+              ),
+            ],
           ),
           padding: const EdgeInsets.all(16),
           child: Column(
@@ -309,7 +448,10 @@ class _EarthquakeDashboardState extends State<EarthquakeDashboard> {
                         ),
                         Text(
                           intensity,
-                          style: TextStyle(fontSize: 12, color: alertColor, fontWeight: FontWeight.w600),
+                          style: TextStyle(
+                              fontSize: 12,
+                              color: alertColor,
+                              fontWeight: FontWeight.w600),
                         ),
                       ],
                     ),
@@ -324,12 +466,15 @@ class _EarthquakeDashboardState extends State<EarthquakeDashboard> {
               ),
               const Divider(color: Colors.white12, height: 16),
               Text(
-                '🕐 ${DateFormat('yyyy-MM-dd HH:mm').format(dateTime)}  |  📍 ${latitude.toStringAsFixed(3)}°, ${longitude.toStringAsFixed(3)}°  |  ⬇ ${depth.toStringAsFixed(1)} km',
+                '🕐 ${DateFormat('yyyy-MM-dd HH:mm').format(dateTime)}'
+                '  |  📍 ${latitude.toStringAsFixed(3)}°, ${longitude.toStringAsFixed(3)}°'
+                '  |  ⬇ ${depth.toStringAsFixed(1)} km',
                 style: const TextStyle(color: Colors.grey, fontSize: 11),
               ),
               const SizedBox(height: 8),
               Container(
-                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
                 decoration: BoxDecoration(
                   color: tsunami == 1
                       ? Colors.redAccent.withValues(alpha: 0.12)
@@ -344,20 +489,56 @@ class _EarthquakeDashboardState extends State<EarthquakeDashboard> {
                 child: Row(
                   children: [
                     Icon(
-                      tsunami == 1 ? Icons.warning_amber_rounded : Icons.check_circle_outline,
-                      color: tsunami == 1 ? Colors.redAccent : Colors.greenAccent,
+                      tsunami == 1
+                          ? Icons.warning_amber_rounded
+                          : Icons.check_circle_outline,
+                      color:
+                          tsunami == 1 ? Colors.redAccent : Colors.greenAccent,
                       size: 16,
                     ),
                     const SizedBox(width: 8),
                     Text(
-                      tsunami == 1 ? 'TSUNAMI WARNING ISSUED' : 'No Tsunami Warning',
+                      tsunami == 1
+                          ? 'TSUNAMI WARNING ISSUED'
+                          : 'No Tsunami Warning',
                       style: TextStyle(
-                        color: tsunami == 1 ? Colors.redAccent : Colors.greenAccent,
+                        color: tsunami == 1
+                            ? Colors.redAccent
+                            : Colors.greenAccent,
                         fontWeight: FontWeight.w700,
                         fontSize: 12,
                       ),
                     ),
                   ],
+                ),
+              ),
+              const SizedBox(height: 10),
+              // Quick-analyze shortcut into AI pane
+              SizedBox(
+                width: double.infinity,
+                child: OutlinedButton.icon(
+                  style: OutlinedButton.styleFrom(
+                    side: BorderSide(
+                        color: Colors.purpleAccent.withValues(alpha: 0.5)),
+                    foregroundColor: Colors.purpleAccent,
+                    padding: const EdgeInsets.symmetric(vertical: 8),
+                  ),
+                  icon: const Icon(Icons.psychology_rounded, size: 16),
+                  label: const Text('Analyze with AI',
+                      style: TextStyle(fontSize: 12)),
+                  onPressed: () {
+                    if (!_showAIChat) setState(() => _showAIChat = true);
+                    final p = _selectedQuake!['properties'];
+                    final c = _selectedQuake!['geometry']['coordinates'];
+                    final mag = (p['mag'] as num?)?.toDouble() ?? 0.0;
+                    final d = (c[2] as num?)?.toDouble() ?? 0.0;
+                    final place = p['place'] ?? 'Unknown';
+                    _sendMessageToAi(
+                      'Analyze this earthquake: M${mag.toStringAsFixed(1)} at $place, '
+                      'depth ${d.toStringAsFixed(1)} km. '
+                      'What are the key risks and recommended immediate actions?',
+                    );
+                  },
                 ),
               ),
             ],
@@ -367,38 +548,12 @@ class _EarthquakeDashboardState extends State<EarthquakeDashboard> {
     );
   }
 
-  Widget _buildDetailRow(IconData icon, String label, String value) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 16.0),
-      child: Row(
-        children: [
-          Icon(icon, size: 20, color: Colors.grey[400]),
-          const SizedBox(width: 12),
-          Text(
-            '$label:',
-            style: TextStyle(color: Colors.grey[400], fontSize: 14),
-          ),
-          const SizedBox(width: 8),
-          Expanded(
-            child: Text(
-              value,
-              style: const TextStyle(
-                color: Colors.white,
-                fontSize: 15,
-                fontWeight: FontWeight.w500,
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
+  // ─── Map Marker Builder ───────────────────────────────────────────────────────
   List<Marker> _buildMarkers() {
     final List<Marker> normalMarkers = [];
     final List<Marker> selectedMarkers = [];
-    // Guard: if the map widget hasn't fully rendered yet, fall back to a safe
-    // default zoom value so the camera.zoom access never throws a red screen.
+
+    // Safe camera zoom read — guard against pre-layout boot exceptions
     double currentZoom;
     try {
       currentZoom = _mapController.camera.zoom;
@@ -406,16 +561,16 @@ class _EarthquakeDashboardState extends State<EarthquakeDashboard> {
       currentZoom = 4.0;
     }
 
-    for (var feature in _visibleEarthquakes) {
+    for (final feature in _visibleEarthquakes) {
       final props = feature['properties'];
-      final geometry = feature['geometry'];
-      final coords = geometry['coordinates'];
+      final coords = feature['geometry']['coordinates'];
 
       final double magnitude = (props['mag'] as num?)?.toDouble() ?? 0.0;
       final double longitude = (coords[0] as num?)?.toDouble() ?? 0.0;
       final double latitude = (coords[1] as num?)?.toDouble() ?? 0.0;
 
-      final bool isSelected = (_selectedQuake != null && _selectedQuake!['properties']['time'] == props['time']);
+      final bool isSelected = _selectedQuake != null &&
+          _selectedQuake!['properties']['time'] == props['time'];
 
       Color alertColor = Colors.greenAccent;
       if (magnitude >= 4.0 && magnitude < 5.5) {
@@ -424,7 +579,10 @@ class _EarthquakeDashboardState extends State<EarthquakeDashboard> {
         alertColor = Colors.redAccent;
       }
 
-      final double markerSize = isSelected ? 40.0 : (14.0 + (currentZoom * 1.2)).clamp(14.0, 28.0);
+      // Responsive marker sizing — stays visible on world-view, scales on zoom
+      final double markerSize = isSelected
+          ? 38.0
+          : (12.0 + (currentZoom * 1.1)).clamp(12.0, 26.0);
 
       final marker = Marker(
         point: LatLng(latitude, longitude),
@@ -440,13 +598,15 @@ class _EarthquakeDashboardState extends State<EarthquakeDashboard> {
                 color: isSelected ? Colors.white : alertColor,
                 width: isSelected ? 2.5 : 1.5,
               ),
-              boxShadow: isSelected ? [
-                BoxShadow(
-                  color: alertColor.withValues(alpha: 0.7),
-                  blurRadius: 10,
-                  spreadRadius: 2,
-                ),
-              ] : null,
+              boxShadow: isSelected
+                  ? [
+                      BoxShadow(
+                        color: alertColor.withValues(alpha: 0.7),
+                        blurRadius: 10,
+                        spreadRadius: 2,
+                      ),
+                    ]
+                  : null,
             ),
           ),
         ),
@@ -462,6 +622,7 @@ class _EarthquakeDashboardState extends State<EarthquakeDashboard> {
     return [...normalMarkers, ...selectedMarkers];
   }
 
+  // ─── Map Controls ─────────────────────────────────────────────────────────────
   void _zoomIn() {
     final currentZoom = _mapController.camera.zoom;
     _mapController.move(_mapController.camera.center, currentZoom + 1.0);
@@ -476,43 +637,49 @@ class _EarthquakeDashboardState extends State<EarthquakeDashboard> {
     _mapController.move(center, zoom);
   }
 
+  // ─── Legend Popup ─────────────────────────────────────────────────────────────
   void _showLegendPopup() {
     showDialog(
       context: context,
       builder: (context) {
         return AlertDialog(
           backgroundColor: const Color(0xFF1E1E1E),
-          title: const Text('Map Legend', style: TextStyle(color: Colors.white)),
+          title:
+              const Text('Map Legend', style: TextStyle(color: Colors.white)),
           content: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              _buildLegendItem(Colors.greenAccent, 'Weak Tremors (Magnitude < 3.0)'),
+              _buildLegendItem(
+                  Colors.greenAccent, 'Weak Tremors (Magnitude < 3.0)'),
               const SizedBox(height: 12),
-              _buildLegendItem(Colors.orangeAccent, 'Moderate Tremors (Magnitude 3.0 to 4.9)'),
+              _buildLegendItem(Colors.orangeAccent,
+                  'Moderate Tremors (Magnitude 3.0 to 4.9)'),
               const SizedBox(height: 12),
-              _buildLegendItem(Colors.redAccent, 'Intense / Severe Tremors (Magnitude >= 5.0)'),
+              _buildLegendItem(Colors.redAccent,
+                  'Intense / Severe Tremors (Magnitude >= 5.0)'),
               const SizedBox(height: 12),
               Row(
                 children: [
                   Container(
-                    width: 24,
-                    height: 4,
-                    color: Colors.orangeAccent,
-                  ),
+                      width: 24, height: 4, color: Colors.orangeAccent),
                   const SizedBox(width: 12),
-                  const Expanded(child: Text('Active Geological Tectonic Fault Lines', style: TextStyle(color: Colors.grey))),
+                  const Expanded(
+                    child: Text('Active Geological Tectonic Fault Lines',
+                        style: TextStyle(color: Colors.grey)),
+                  ),
                 ],
-              )
+              ),
             ],
           ),
           actions: [
             TextButton(
               onPressed: () => Navigator.pop(context),
-              child: const Text('Close', style: TextStyle(color: Colors.grey)),
+              child:
+                  const Text('Close', style: TextStyle(color: Colors.grey)),
             ),
           ],
         );
-      }
+      },
     );
   }
 
@@ -529,11 +696,13 @@ class _EarthquakeDashboardState extends State<EarthquakeDashboard> {
           ),
         ),
         const SizedBox(width: 12),
-        Expanded(child: Text(text, style: const TextStyle(color: Colors.grey))),
+        Expanded(
+            child: Text(text, style: const TextStyle(color: Colors.grey))),
       ],
     );
   }
 
+  // ─── Regional Jump Menu ───────────────────────────────────────────────────────
   void _showRegionalMenu() {
     showModalBottomSheet(
       context: context,
@@ -604,9 +773,12 @@ class _EarthquakeDashboardState extends State<EarthquakeDashboard> {
     );
   }
 
+  // ─────────────────────────────────────────────────────────────────────────────
+  // LEFT PANE: Filter Sidebar
+  // ─────────────────────────────────────────────────────────────────────────────
   Widget _buildSidebar() {
     return Container(
-      width: _showMap ? 360 : null,
+      width: (_showMap || _showAIChat) ? 360 : null,
       color: const Color(0xFF161616),
       child: Column(
         children: [
@@ -615,26 +787,24 @@ class _EarthquakeDashboardState extends State<EarthquakeDashboard> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
+                // Date range picker
                 ElevatedButton.icon(
                   style: ElevatedButton.styleFrom(
                     backgroundColor: const Color(0xFF262626),
                     minimumSize: const Size.fromHeight(48),
                     shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(8),
-                    ),
+                        borderRadius: BorderRadius.circular(8)),
                   ),
                   icon: const Icon(Icons.date_range, color: Colors.white),
                   label: Text(
-                    '${DateFormat('MMM d').format(_startDate)} - ${DateFormat('MMM d').format(_endDate)}',
+                    '${DateFormat('MMM d').format(_startDate)} – ${DateFormat('MMM d').format(_endDate)}',
                     style: const TextStyle(color: Colors.white),
                   ),
                   onPressed: () async {
                     final picked = await showDateRangePicker(
                       context: context,
-                      initialDateRange: DateTimeRange(
-                        start: _startDate,
-                        end: _endDate,
-                      ),
+                      initialDateRange:
+                          DateTimeRange(start: _startDate, end: _endDate),
                       firstDate: DateTime(2000),
                       lastDate: DateTime.now(),
                       builder: (context, child) {
@@ -662,8 +832,10 @@ class _EarthquakeDashboardState extends State<EarthquakeDashboard> {
                   },
                 ),
                 const SizedBox(height: 12),
+                // Count + visible-only toggle
                 Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                   decoration: BoxDecoration(
                     color: const Color(0xFF262626),
                     borderRadius: BorderRadius.circular(8),
@@ -672,7 +844,8 @@ class _EarthquakeDashboardState extends State<EarthquakeDashboard> {
                     children: [
                       Text(
                         'Showing: ${_visibleEarthquakes.length} Earthquakes',
-                        style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+                        style: const TextStyle(
+                            color: Colors.white, fontWeight: FontWeight.bold),
                       ),
                       Row(
                         mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -680,16 +853,14 @@ class _EarthquakeDashboardState extends State<EarthquakeDashboard> {
                           const Expanded(
                             child: Text(
                               'Only list Earthquakes Shown in Map',
-                              style: TextStyle(color: Colors.grey, fontSize: 12),
+                              style:
+                                  TextStyle(color: Colors.grey, fontSize: 12),
                             ),
                           ),
                           Switch(
                             value: _onlyShowVisibleInMap,
-                            onChanged: (val) {
-                              setState(() {
-                                _onlyShowVisibleInMap = val;
-                              });
-                            },
+                            onChanged: (val) =>
+                                setState(() => _onlyShowVisibleInMap = val),
                             activeColor: Colors.orangeAccent,
                           ),
                         ],
@@ -733,13 +904,12 @@ class _EarthquakeDashboardState extends State<EarthquakeDashboard> {
                         'Newest First',
                         'Oldest First',
                         'Largest Magnitude',
-                        'Smallest Magnitude'
-                      ].map<DropdownMenuItem<String>>((String value) {
-                        return DropdownMenuItem<String>(
-                          value: value,
-                          child: Text(value),
-                        );
-                      }).toList(),
+                        'Smallest Magnitude',
+                      ]
+                          .map<DropdownMenuItem<String>>(
+                              (v) => DropdownMenuItem<String>(
+                                  value: v, child: Text(v)))
+                          .toList(),
                     ),
                   ),
                 ),
@@ -750,8 +920,8 @@ class _EarthquakeDashboardState extends State<EarthquakeDashboard> {
           Expanded(
             child: _isLoading
                 ? const Center(
-                    child: CircularProgressIndicator(color: Colors.redAccent),
-                  )
+                    child:
+                        CircularProgressIndicator(color: Colors.redAccent))
                 : ListView.builder(
                     itemCount: _visibleEarthquakes.length,
                     itemBuilder: (context, index) {
@@ -765,7 +935,6 @@ class _EarthquakeDashboardState extends State<EarthquakeDashboard> {
                           (coords[0] as num?)?.toDouble() ?? 0.0;
                       final double latitude =
                           (coords[1] as num?)?.toDouble() ?? 0.0;
-
                       final int timeMillis = props['time'] ?? 0;
                       final DateTime dateTime =
                           DateTime.fromMillisecondsSinceEpoch(timeMillis);
@@ -773,28 +942,22 @@ class _EarthquakeDashboardState extends State<EarthquakeDashboard> {
                       Color alertColor = Colors.greenAccent;
                       if (magnitude >= 4.0 && magnitude < 5.5) {
                         alertColor = Colors.orangeAccent;
-                      } else if (magnitude >= 5.5)
+                      } else if (magnitude >= 5.5) {
                         alertColor = Colors.redAccent;
+                      }
 
                       return Card(
                         color: const Color(0xFF1E1E1E),
                         margin: const EdgeInsets.symmetric(
-                          horizontal: 16,
-                          vertical: 6,
-                        ),
+                            horizontal: 16, vertical: 6),
                         shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(12),
-                        ),
+                            borderRadius: BorderRadius.circular(12)),
                         child: InkWell(
                           borderRadius: BorderRadius.circular(12),
                           onTap: () {
-                            setState(() {
-                              _selectedQuake = feature;
-                            });
+                            setState(() => _selectedQuake = feature);
                             _mapController.move(
-                              LatLng(latitude, longitude),
-                              8.0,
-                            );
+                                LatLng(latitude, longitude), 8.0);
                           },
                           child: Padding(
                             padding: const EdgeInsets.all(12.0),
@@ -804,12 +967,11 @@ class _EarthquakeDashboardState extends State<EarthquakeDashboard> {
                                   width: 44,
                                   height: 44,
                                   decoration: BoxDecoration(
-                                    color: alertColor.withValues(alpha: 0.15),
+                                    color:
+                                        alertColor.withValues(alpha: 0.15),
                                     shape: BoxShape.circle,
                                     border: Border.all(
-                                      color: alertColor,
-                                      width: 2,
-                                    ),
+                                        color: alertColor, width: 2),
                                   ),
                                   child: Center(
                                     child: Text(
@@ -844,13 +1006,11 @@ class _EarthquakeDashboardState extends State<EarthquakeDashboard> {
                                             MainAxisAlignment.spaceBetween,
                                         children: [
                                           Text(
-                                            DateFormat(
-                                              'MMM d, HH:mm',
-                                            ).format(dateTime),
+                                            DateFormat('MMM d, HH:mm')
+                                                .format(dateTime),
                                             style: const TextStyle(
-                                              color: Colors.grey,
-                                              fontSize: 12,
-                                            ),
+                                                color: Colors.grey,
+                                                fontSize: 12),
                                           ),
                                           Text(
                                             (props['status'] ?? '')
@@ -880,8 +1040,12 @@ class _EarthquakeDashboardState extends State<EarthquakeDashboard> {
     );
   }
 
+  // ─────────────────────────────────────────────────────────────────────────────
+  // CENTER PANE: Vector Map
+  // ─────────────────────────────────────────────────────────────────────────────
   Widget _buildMapPane() {
     return Expanded(
+      flex: 3,
       child: Stack(
         children: [
           FlutterMap(
@@ -892,11 +1056,13 @@ class _EarthquakeDashboardState extends State<EarthquakeDashboard> {
               minZoom: 1.0,
               maxZoom: 18.0,
               onPositionChanged: (position, hasGesture) => setState(() {}),
-              onTap: (tapPosition, point) => setState(() { _selectedQuake = null; }),
+              onTap: (tapPosition, point) =>
+                  setState(() => _selectedQuake = null),
             ),
             children: [
               TileLayer(
-                urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+                urlTemplate:
+                    'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
                 userAgentPackageName: 'com.example.seismic_one',
               ),
               MarkerLayer(markers: _buildMarkers()),
@@ -921,7 +1087,8 @@ class _EarthquakeDashboardState extends State<EarthquakeDashboard> {
                   mini: true,
                   backgroundColor: const Color(0xFF1A1A1A),
                   onPressed: _showLegendPopup,
-                  child: const Icon(Icons.legend_toggle_rounded, color: Colors.white),
+                  child: const Icon(Icons.legend_toggle_rounded,
+                      color: Colors.white),
                 ),
                 const SizedBox(height: 16),
                 FloatingActionButton(
@@ -947,6 +1114,401 @@ class _EarthquakeDashboardState extends State<EarthquakeDashboard> {
     );
   }
 
+  // ─────────────────────────────────────────────────────────────────────────────
+  // RIGHT PANE: Groq AI Emergency Assistant
+  // ─────────────────────────────────────────────────────────────────────────────
+  Widget _buildAIChatPane() {
+    final ScrollController scrollController = ScrollController();
+
+    return Container(
+      width: 380,
+      decoration: const BoxDecoration(
+        color: Color(0xFF0F0F1A),
+        border:
+            Border(left: BorderSide(color: Color(0xFF2A2A3A), width: 1)),
+      ),
+      child: Column(
+        children: [
+          // ── Header ───────────────────────────────────────────────────────────
+          Container(
+            padding:
+                const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+            decoration: const BoxDecoration(
+              color: Color(0xFF14142B),
+              border:
+                  Border(bottom: BorderSide(color: Color(0xFF2A2A3A))),
+            ),
+            child: Row(
+              children: [
+                Container(
+                  width: 36,
+                  height: 36,
+                  decoration: BoxDecoration(
+                    gradient: const LinearGradient(
+                      colors: [Color(0xFF7C3AED), Color(0xFF4F46E5)],
+                    ),
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: const Icon(Icons.psychology_rounded,
+                      color: Colors.white, size: 20),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text(
+                        'SeismicOne AI',
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontWeight: FontWeight.w700,
+                          fontSize: 14,
+                        ),
+                      ),
+                      Text(
+                        _selectedQuake != null
+                            ? '⚡ Epicenter context loaded'
+                            : '● Ready for queries',
+                        style: TextStyle(
+                          color: _selectedQuake != null
+                              ? Colors.purpleAccent
+                              : Colors.greenAccent,
+                          fontSize: 11,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                if (_chatHistory.isNotEmpty)
+                  IconButton(
+                    icon: const Icon(Icons.delete_sweep_rounded,
+                        color: Colors.grey, size: 18),
+                    tooltip: 'Clear chat',
+                    onPressed: () =>
+                        setState(() => _chatHistory.clear()),
+                    padding: EdgeInsets.zero,
+                    constraints: const BoxConstraints(),
+                  ),
+              ],
+            ),
+          ),
+
+          // ── Active epicenter context banner ──────────────────────────────────
+          if (_selectedQuake != null)
+            Container(
+              padding:
+                  const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+              decoration: BoxDecoration(
+                color: Colors.purple.withValues(alpha: 0.08),
+                border: const Border(
+                    bottom: BorderSide(color: Color(0xFF2A2A3A))),
+              ),
+              child: Row(
+                children: [
+                  const Icon(Icons.location_on_rounded,
+                      color: Colors.purpleAccent, size: 14),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: Text(
+                      () {
+                        final p = _selectedQuake!['properties'];
+                        final c =
+                            _selectedQuake!['geometry']['coordinates'];
+                        final mag =
+                            (p['mag'] as num?)?.toDouble() ?? 0.0;
+                        final d =
+                            (c[2] as num?)?.toDouble() ?? 0.0;
+                        return 'M${mag.toStringAsFixed(1)} · ${p['place'] ?? 'Unknown'} · ${d.toStringAsFixed(0)} km depth';
+                      }(),
+                      style: const TextStyle(
+                          color: Colors.purpleAccent, fontSize: 11),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+
+          // ── Chat messages ─────────────────────────────────────────────────────
+          Expanded(
+            child: _chatHistory.isEmpty
+                ? _buildEmptyAIState()
+                : ListView.builder(
+                    controller: scrollController,
+                    padding: const EdgeInsets.all(12),
+                    itemCount:
+                        _chatHistory.length + (_isAiLoading ? 1 : 0),
+                    itemBuilder: (context, index) {
+                      if (_isAiLoading &&
+                          index == _chatHistory.length) {
+                        return _buildTypingIndicator();
+                      }
+                      return _buildChatBubble(_chatHistory[index]);
+                    },
+                  ),
+          ),
+
+          // ── Input bar ─────────────────────────────────────────────────────────
+          Container(
+            padding: const EdgeInsets.all(12),
+            decoration: const BoxDecoration(
+              color: Color(0xFF14142B),
+              border: Border(top: BorderSide(color: Color(0xFF2A2A3A))),
+            ),
+            child: Row(
+              children: [
+                Expanded(
+                  child: TextField(
+                    controller: _aiInputController,
+                    style: const TextStyle(
+                        color: Colors.white, fontSize: 13),
+                    maxLines: null,
+                    decoration: InputDecoration(
+                      hintText:
+                          'Ask about seismic risks, safety...',
+                      hintStyle: TextStyle(
+                          color: Colors.grey.shade600, fontSize: 13),
+                      filled: true,
+                      fillColor: const Color(0xFF1C1C30),
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(12),
+                        borderSide: BorderSide.none,
+                      ),
+                      contentPadding: const EdgeInsets.symmetric(
+                          horizontal: 14, vertical: 10),
+                    ),
+                    onSubmitted: (text) => _sendMessageToAi(text),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Container(
+                  decoration: BoxDecoration(
+                    gradient: const LinearGradient(
+                      colors: [Color(0xFF7C3AED), Color(0xFF4F46E5)],
+                    ),
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: IconButton(
+                    onPressed: _isAiLoading
+                        ? null
+                        : () =>
+                            _sendMessageToAi(_aiInputController.text),
+                    icon: _isAiLoading
+                        ? const SizedBox(
+                            width: 18,
+                            height: 18,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 2,
+                              color: Colors.white,
+                            ),
+                          )
+                        : const Icon(Icons.send_rounded,
+                            color: Colors.white, size: 18),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildEmptyAIState() {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(24.0),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              width: 72,
+              height: 72,
+              decoration: BoxDecoration(
+                gradient: const LinearGradient(
+                  colors: [Color(0xFF7C3AED), Color(0xFF4F46E5)],
+                ),
+                borderRadius: BorderRadius.circular(20),
+              ),
+              child: const Icon(Icons.psychology_rounded,
+                  color: Colors.white, size: 38),
+            ),
+            const SizedBox(height: 16),
+            const Text(
+              'SeismicOne AI',
+              style: TextStyle(
+                  color: Colors.white,
+                  fontWeight: FontWeight.w700,
+                  fontSize: 18),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              'Powered by Groq · Llama 3\nSelect an epicenter on the map or ask anything about earthquake safety and seismic risk.',
+              style:
+                  TextStyle(color: Colors.grey.shade500, fontSize: 12),
+              textAlign: TextAlign.center,
+            ),
+            const SizedBox(height: 24),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              alignment: WrapAlignment.center,
+              children: [
+                _buildQuickPrompt('🌊 Tsunami risk factors'),
+                _buildQuickPrompt('🏚️ Earthquake preparedness'),
+                _buildQuickPrompt('📊 Richter vs Moment magnitude'),
+                _buildQuickPrompt('🔴 Ring of Fire explained'),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildQuickPrompt(String text) {
+    return GestureDetector(
+      onTap: () => _sendMessageToAi(text),
+      child: Container(
+        padding:
+            const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        decoration: BoxDecoration(
+          color: const Color(0xFF1C1C30),
+          borderRadius: BorderRadius.circular(20),
+          border: Border.all(color: const Color(0xFF2A2A4A)),
+        ),
+        child: Text(text,
+            style: const TextStyle(
+                color: Colors.white70, fontSize: 12)),
+      ),
+    );
+  }
+
+  Widget _buildChatBubble(ChatMessage msg) {
+    final isUser = msg.role == 'user';
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 12),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisAlignment:
+            isUser ? MainAxisAlignment.end : MainAxisAlignment.start,
+        children: [
+          if (!isUser) ...[
+            Container(
+              width: 28,
+              height: 28,
+              margin: const EdgeInsets.only(right: 8, top: 2),
+              decoration: BoxDecoration(
+                gradient: const LinearGradient(
+                  colors: [Color(0xFF7C3AED), Color(0xFF4F46E5)],
+                ),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: const Icon(Icons.psychology_rounded,
+                  color: Colors.white, size: 16),
+            ),
+          ],
+          Flexible(
+            child: Container(
+              padding: const EdgeInsets.symmetric(
+                  horizontal: 14, vertical: 10),
+              decoration: BoxDecoration(
+                color: isUser
+                    ? const Color(0xFF2D1F6E)
+                    : const Color(0xFF1A1A2E),
+                borderRadius: BorderRadius.only(
+                  topLeft: const Radius.circular(16),
+                  topRight: const Radius.circular(16),
+                  bottomLeft: Radius.circular(isUser ? 16 : 4),
+                  bottomRight: Radius.circular(isUser ? 4 : 16),
+                ),
+                border: Border.all(
+                  color: isUser
+                      ? Colors.purple.withValues(alpha: 0.3)
+                      : Colors.white.withValues(alpha: 0.06),
+                ),
+              ),
+              child: Text(
+                msg.content,
+                style: TextStyle(
+                  color: isUser
+                      ? Colors.white
+                      : Colors.white.withValues(alpha: 0.9),
+                  fontSize: 13,
+                  height: 1.5,
+                ),
+              ),
+            ),
+          ),
+          if (isUser) ...[
+            Container(
+              width: 28,
+              height: 28,
+              margin: const EdgeInsets.only(left: 8, top: 2),
+              decoration: BoxDecoration(
+                color: const Color(0xFF2D1F6E),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: const Icon(Icons.person_rounded,
+                  color: Colors.white70, size: 16),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _buildTypingIndicator() {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 12),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            width: 28,
+            height: 28,
+            margin: const EdgeInsets.only(right: 8, top: 2),
+            decoration: BoxDecoration(
+              gradient: const LinearGradient(
+                colors: [Color(0xFF7C3AED), Color(0xFF4F46E5)],
+              ),
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: const Icon(Icons.psychology_rounded,
+                color: Colors.white, size: 16),
+          ),
+          Container(
+            padding: const EdgeInsets.symmetric(
+                horizontal: 16, vertical: 12),
+            decoration: BoxDecoration(
+              color: const Color(0xFF1A1A2E),
+              borderRadius: BorderRadius.circular(16),
+              border: Border.all(
+                  color: Colors.white.withValues(alpha: 0.06)),
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const SizedBox(
+                    width: 44, height: 16, child: _TypingDots()),
+                const SizedBox(width: 8),
+                Text(
+                  'Analyzing telemetry...',
+                  style: TextStyle(
+                      color: Colors.grey.shade500, fontSize: 12),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // MAIN BUILD — Tri-Pane Scaffold
+  // ─────────────────────────────────────────────────────────────────────────────
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -968,28 +1530,45 @@ class _EarthquakeDashboardState extends State<EarthquakeDashboard> {
           onPressed: _showReportDialog,
         ),
         actions: [
+          // ── Toggle: Left Sidebar ──────────────────────────────────────────────
           IconButton(
             icon: Icon(
-              _showSidebar ? Icons.dashboard_rounded : Icons.dashboard_outlined,
-              color: _showSidebar ? Colors.orangeAccent : Colors.white,
+              Icons.dashboard_rounded,
+              color:
+                  _showSidebar ? Colors.orangeAccent : Colors.white54,
             ),
             tooltip: 'Toggle Sidebar',
             onPressed: () {
-              if (_showSidebar && !_showMap) return;
+              if (_showSidebar && !_showMap && !_showAIChat) return;
               setState(() => _showSidebar = !_showSidebar);
             },
           ),
+          // ── Toggle: Center Map ────────────────────────────────────────────────
           IconButton(
             icon: Icon(
-              _showMap ? Icons.map_rounded : Icons.map_outlined,
-              color: _showMap ? Colors.orangeAccent : Colors.white,
+              Icons.map_rounded,
+              color: _showMap ? Colors.orangeAccent : Colors.white54,
             ),
             tooltip: 'Toggle Map',
             onPressed: () {
-              if (_showMap && !_showSidebar) return;
+              if (_showMap && !_showSidebar && !_showAIChat) return;
               setState(() => _showMap = !_showMap);
             },
           ),
+          // ── Toggle: Right AI Chat ─────────────────────────────────────────────
+          IconButton(
+            icon: Icon(
+              Icons.psychology_rounded,
+              color:
+                  _showAIChat ? Colors.purpleAccent : Colors.white54,
+            ),
+            tooltip: 'Toggle AI Assistant',
+            onPressed: () {
+              if (_showAIChat && !_showSidebar && !_showMap) return;
+              setState(() => _showAIChat = !_showAIChat);
+            },
+          ),
+          // ── Refresh ───────────────────────────────────────────────────────────
           IconButton(
             icon: const Icon(Icons.refresh_rounded, color: Colors.white),
             tooltip: 'Refresh Live Feed',
@@ -1002,12 +1581,74 @@ class _EarthquakeDashboardState extends State<EarthquakeDashboard> {
       ),
       body: Row(
         children: [
+          // Left: Filter Sidebar
           if (_showSidebar)
-            _showMap ? _buildSidebar() : Expanded(child: _buildSidebar()),
-          if (_showMap)
-            _buildMapPane(),
+            (_showMap || _showAIChat)
+                ? _buildSidebar()
+                : Expanded(child: _buildSidebar()),
+          // Center: Vector Map
+          if (_showMap) _buildMapPane(),
+          // Right: Groq AI Chat
+          if (_showAIChat) _buildAIChatPane(),
         ],
       ),
+    );
+  }
+}
+
+// ─── Animated Typing Dots Widget ─────────────────────────────────────────────
+class _TypingDots extends StatefulWidget {
+  const _TypingDots();
+
+  @override
+  State<_TypingDots> createState() => _TypingDotsState();
+}
+
+class _TypingDotsState extends State<_TypingDots>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1200),
+    )..repeat();
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: _controller,
+      builder: (context, _) {
+        return Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: List.generate(3, (i) {
+            final delay = i / 3.0;
+            final value =
+                ((_controller.value - delay) % 1.0).clamp(0.0, 1.0);
+            final opacity =
+                (value < 0.5 ? value * 2 : (1.0 - value) * 2)
+                    .clamp(0.2, 1.0);
+            return Container(
+              margin: const EdgeInsets.symmetric(horizontal: 2),
+              width: 6,
+              height: 6,
+              decoration: BoxDecoration(
+                color: Colors.purpleAccent.withValues(alpha: opacity),
+                shape: BoxShape.circle,
+              ),
+            );
+          }),
+        );
+      },
     );
   }
 }
