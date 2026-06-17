@@ -4,8 +4,16 @@ import 'dart:convert';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:intl/intl.dart';
+import 'package:flutter_dotenv/flutter_dotenv.dart';
 
-void main() {
+Future<void> main() async {
+  // 1. Guard native engine bindings before running async initialization files
+  WidgetsFlutterBinding.ensureInitialized();
+
+  // 2. Load your local hidden environment file completely into system memory
+  await dotenv.load(fileName: ".env");
+
+  // 3. Launch your clean dashboard layout safely
   runApp(const SeismicOneApp());
 }
 
@@ -70,8 +78,8 @@ class _EarthquakeDashboardState extends State<EarthquakeDashboard> {
   bool _showAIChat = true;
 
   // ─── Groq AI Configuration ────────────────────────────────────────────────────
-  final String _groqApiKey =
-      "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";
+  final String _groqApiKey = dotenv.env['GROQ_API_KEY'] ?? "";
+
   final List<ChatMessage> _chatHistory = [];
   final TextEditingController _aiInputController = TextEditingController();
   bool _isAiLoading = false;
@@ -213,7 +221,7 @@ No epicenter is currently selected. Answer general seismology questions, explain
           'Authorization': 'Bearer $_groqApiKey',
         },
         body: json.encode({
-          'model': 'llama3-8b-8192',
+          'model': 'llama-3.1-8b-instant',
           'messages': [
             {'role': 'system', 'content': baseSystemPrompt},
             {'role': 'user', 'content': userText.trim()},
