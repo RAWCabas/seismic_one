@@ -62,7 +62,7 @@ flutter:
   # the material Icons class.
   uses-material-design: true
 
-  # ✅ REGISTERING SECURE LOCAL ASSET ROUTING PATHS
+  # ✅ REGISTERING RUNTIME ASSETS LOCATIONS ACCORDING TO YOUR WINDOWS TREE
   assets:
     - .env
 

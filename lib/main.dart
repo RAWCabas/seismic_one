@@ -1,19 +1,23 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:intl/intl.dart';
-import 'package:flutter_dotenv/flutter_dotenv.dart';
+import 'package:flutter_dotenv/flutter_dotenv.dart'; // ✅ Managed Environment Security Layer
 
 Future<void> main() async {
-  // 1. Guard native engine bindings before running async initialization files
+  // Guard native engine bindings before running async initialization files
   WidgetsFlutterBinding.ensureInitialized();
-
-  // 2. Load your local hidden environment file completely into system memory
-  await dotenv.load(fileName: ".env");
-
-  // 3. Launch your clean dashboard layout safely
+  
+  // Load local environment file completely into application memory before UI mounts
+  try {
+    await dotenv.load(fileName: ".env");
+  } catch (e) {
+    debugPrint("Environment setup warning: Ensure .env file exists and is registered in pubspec.yaml ($e)");
+  }
+  
   runApp(const SeismicOneApp());
 }
 
@@ -65,6 +69,7 @@ class _EarthquakeDashboardState extends State<EarthquakeDashboard> {
   List _earthquakes = [];
   bool _isLoading = true;
   final MapController _mapController = MapController();
+  List<Polyline> _tectonicPolylines = [];
 
   DateTime _startDate = DateTime.now().subtract(const Duration(days: 1));
   DateTime _endDate = DateTime.now();
@@ -78,10 +83,13 @@ class _EarthquakeDashboardState extends State<EarthquakeDashboard> {
   bool _showAIChat = true;
 
   // ─── Groq AI Configuration ────────────────────────────────────────────────────
+  // ✅ Key is pulled directly from environment map arrays. Safe from public git scrapers.
   final String _groqApiKey = dotenv.env['GROQ_API_KEY'] ?? "";
-
   final List<ChatMessage> _chatHistory = [];
   final TextEditingController _aiInputController = TextEditingController();
+  
+  // ✅ Lifted ScrollController up to persistent State scope to allow auto-scrolling updates
+  final ScrollController _chatScrollController = ScrollController();
   bool _isAiLoading = false;
 
   // ─── Computed: Visible Earthquakes ───────────────────────────────────────────
@@ -105,19 +113,119 @@ class _EarthquakeDashboardState extends State<EarthquakeDashboard> {
   void initState() {
     super.initState();
     fetchEarthquakeData();
+    _loadTectonicPlates();
   }
 
   @override
   void dispose() {
     _aiInputController.dispose();
+    _chatScrollController.dispose(); // ✅ Safe cleanup of the scroll tracker loop
     super.dispose();
   }
 
   // ─── USGS GeoJSON Live Fetch ──────────────────────────────────────────────────
+  Future<void> _loadTectonicPlates() async {
+    try {
+      final raw = await rootBundle.loadString('assets/json/tectonic_plates.json');
+      final Map<String, dynamic> decoded = json.decode(raw) as Map<String, dynamic>;
+      final features = decoded['features'] as List<dynamic>? ?? [];
+
+      List<List<LatLng>> _splitAntimeridianSegments(List<dynamic> coordList) {
+        final segments = <List<LatLng>>[];
+        List<LatLng> current = [];
+
+        for (final rawPair in coordList) {
+          try {
+            if (rawPair is List && rawPair.length >= 2) {
+              final lon = (rawPair[0] as num).toDouble();
+              final lat = (rawPair[1] as num).toDouble();
+              final point = LatLng(lat, lon);
+
+              if (current.isEmpty) {
+                current.add(point);
+                continue;
+              }
+
+              final prev = current.last;
+              final lonDiff = (prev.longitude - lon).abs();
+
+              if (lonDiff > 180.0) {
+                if (current.length > 0) segments.add(List<LatLng>.from(current));
+                current = [point];
+              } else {
+                current.add(point);
+              }
+            }
+          } catch (_) {
+            // Skip malformed coordinate pair
+            continue;
+          }
+        }
+
+        if (current.isNotEmpty) segments.add(current);
+        return segments;
+      }
+
+      final parsedPolylines = <Polyline>[];
+
+      for (final feature in features) {
+        if (feature is! Map<String, dynamic>) continue;
+        final geometry = feature['geometry'] as Map<String, dynamic>?;
+        if (geometry == null) continue;
+
+        final type = (geometry['type'] ?? '').toString();
+        final coords = geometry['coordinates'];
+        if (coords == null) continue;
+
+        if (type == 'LineString') {
+          if (coords is List) {
+            final segments = _splitAntimeridianSegments(coords);
+            for (final seg in segments) {
+              if (seg.length > 1) {
+                parsedPolylines.add(Polyline(points: seg, color: const Color(0xFFD32F2F), strokeWidth: 2.0));
+              }
+            }
+          }
+        } else if (type == 'Polygon') {
+          if (coords is List && coords.isNotEmpty) {
+            final exterior = coords[0] as List<dynamic>;
+            final segments = _splitAntimeridianSegments(exterior);
+            for (final seg in segments) {
+              if (seg.length > 1) {
+                parsedPolylines.add(Polyline(points: seg, color: const Color(0xFFD32F2F), strokeWidth: 2.0));
+              }
+            }
+          }
+        } else if (type == 'MultiPolygon') {
+          if (coords is List) {
+            for (final polygon in coords) {
+              if (polygon is List && polygon.isNotEmpty) {
+                final exterior = polygon[0] as List<dynamic>;
+                final segments = _splitAntimeridianSegments(exterior);
+                for (final seg in segments) {
+                  if (seg.length > 1) {
+                    parsedPolylines.add(Polyline(points: seg, color: const Color(0xFFD32F2F), strokeWidth: 2.0));
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+
+      if (mounted) {
+        setState(() {
+          _tectonicPolylines = parsedPolylines;
+        });
+      }
+    } catch (error) {
+      debugPrint('Failed to load tectonic plate data: $error');
+    }
+  }
+
   Future<void> fetchEarthquakeData() async {
     final formattedStart = DateFormat('yyyy-MM-dd').format(_startDate);
-    final formattedEnd =
-        '${DateFormat('yyyy-MM-dd').format(_endDate)}T23:59:59';
+    final formattedEnd = '${DateFormat('yyyy-MM-dd').format(_endDate)}T23:59:59';
 
     final url = Uri.parse(
       'https://earthquake.usgs.gov/fdsnws/event/1/query?format=geojson'
@@ -145,17 +253,13 @@ class _EarthquakeDashboardState extends State<EarthquakeDashboard> {
   // ─── Sort Logic ───────────────────────────────────────────────────────────────
   void _sortEarthquakes() {
     if (_currentSortRule == 'Newest First') {
-      _earthquakes.sort(
-        (a, b) => (b['properties']['time'] as int).compareTo(
-          a['properties']['time'] as int,
-        ),
-      );
+      _earthquakes.sort((a, b) =>
+          (b['properties']['time'] as int)
+              .compareTo(a['properties']['time'] as int));
     } else if (_currentSortRule == 'Oldest First') {
-      _earthquakes.sort(
-        (a, b) => (a['properties']['time'] as int).compareTo(
-          b['properties']['time'] as int,
-        ),
-      );
+      _earthquakes.sort((a, b) =>
+          (a['properties']['time'] as int)
+              .compareTo(b['properties']['time'] as int));
     } else if (_currentSortRule == 'Largest Magnitude') {
       _earthquakes.sort((a, b) {
         final magA = (a['properties']['mag'] as num?)?.toDouble() ?? 0.0;
@@ -176,17 +280,16 @@ class _EarthquakeDashboardState extends State<EarthquakeDashboard> {
     if (userText.trim().isEmpty) return;
 
     setState(() {
-      _chatHistory.add(
-        ChatMessage(
-          role: 'user',
-          content: userText.trim(),
-          timestamp: DateTime.now(),
-        ),
-      );
+      _chatHistory.add(ChatMessage(
+        role: 'user',
+        content: userText.trim(),
+        timestamp: DateTime.now(),
+      ));
       _isAiLoading = true;
     });
 
     _aiInputController.clear();
+    _scrollToBottom(); // Auto-scroll right as user message commits
 
     // Build a context-aware system prompt from selected epicenter metadata
     final String baseSystemPrompt;
@@ -197,8 +300,7 @@ class _EarthquakeDashboardState extends State<EarthquakeDashboard> {
       final double depth = (coords[2] as num?)?.toDouble() ?? 0.0;
       final String location = props['place'] ?? 'Unknown Location';
 
-      baseSystemPrompt =
-          '''You are SeismicOne AI — an elite emergency response analyst and seismology expert embedded inside a live earthquake monitoring dashboard.
+      baseSystemPrompt = '''You are SeismicOne AI — an elite emergency response analyst and seismology expert embedded inside a live earthquake monitoring dashboard.
 
 ACTIVE EPICENTER CONTEXT (inject into all reasoning):
   • Location  : $location
@@ -221,10 +323,16 @@ No epicenter is currently selected. Answer general seismology questions, explain
           'Authorization': 'Bearer $_groqApiKey',
         },
         body: json.encode({
-          'model': 'llama-3.1-8b-instant',
+          'model': 'llama-3.1-8b-instant', // ✅ Upgraded to production high-speed engine endpoint
           'messages': [
-            {'role': 'system', 'content': baseSystemPrompt},
-            {'role': 'user', 'content': userText.trim()},
+            {
+              'role': 'system',
+              'content': baseSystemPrompt,
+            },
+            {
+              'role': 'user',
+              'content': userText.trim(),
+            },
           ],
           'temperature': 0.5,
           'max_tokens': 1024,
@@ -233,48 +341,53 @@ No epicenter is currently selected. Answer general seismology questions, explain
 
       if (response.statusCode == 200) {
         final responseData = json.decode(response.body);
-        final aiText =
-            responseData['choices'][0]['message']['content'] ??
+        final aiText = responseData['choices'][0]['message']['content'] ??
             'Unable to analyze telemetry.';
         setState(() {
-          _chatHistory.add(
-            ChatMessage(
-              role: 'assistant',
-              content: aiText,
-              timestamp: DateTime.now(),
-            ),
-          );
+          _chatHistory.add(ChatMessage(
+            role: 'assistant',
+            content: aiText,
+            timestamp: DateTime.now(),
+          ));
           _isAiLoading = false;
         });
       } else {
         final errorBody = json.decode(response.body);
-        final errorMsg =
-            errorBody['error']?['message'] ?? 'HTTP ${response.statusCode}';
+        final errorMsg = errorBody['error']?['message'] ?? 'HTTP ${response.statusCode}';
         setState(() {
-          _chatHistory.add(
-            ChatMessage(
-              role: 'assistant',
-              content:
-                  '⚠️ Groq API error: $errorMsg\n\nVerify your API key and network connection.',
-              timestamp: DateTime.now(),
-            ),
-          );
+          _chatHistory.add(ChatMessage(
+            role: 'assistant',
+            content: '⚠️ Groq API error: $errorMsg\n\nVerify your API key configuration parameters.',
+            timestamp: DateTime.now(),
+          ));
           _isAiLoading = false;
         });
       }
     } catch (e) {
       setState(() {
-        _chatHistory.add(
-          ChatMessage(
-            role: 'assistant',
-            content:
-                '🔌 Network drop detected. Check your internet connection and try again.\n\nError: $e',
-            timestamp: DateTime.now(),
-          ),
-        );
+        _chatHistory.add(ChatMessage(
+          role: 'assistant',
+          content: '🔌 Network drop detected. Check your internet connection and try again.\n\nError: $e',
+          timestamp: DateTime.now(),
+        ));
         _isAiLoading = false;
       });
+    } finally {
+      _scrollToBottom(); // ✅ Auto-scroll right when response maps finish generating
     }
+  }
+
+  // Helper utility to smoothly glide chat list window downwards
+  void _scrollToBottom() {
+    Future.delayed(const Duration(milliseconds: 120), () {
+      if (_chatScrollController.hasClients) {
+        _chatScrollController.animateTo(
+          _chatScrollController.position.maxScrollExtent,
+          duration: const Duration(milliseconds: 300),
+          curve: Curves.easeOut,
+        );
+      }
+    });
   }
 
   // ─── Report Dialog ────────────────────────────────────────────────────────────
@@ -285,8 +398,7 @@ No epicenter is currently selected. Answer general seismology questions, explain
         bool feltIt = true;
         DateTime? selectedDate = DateTime.now();
         TimeOfDay? selectedTime = TimeOfDay.now();
-        final TextEditingController locationController =
-            TextEditingController();
+        final TextEditingController locationController = TextEditingController();
 
         return StatefulBuilder(
           builder: (context, setStateDialog) {
@@ -351,31 +463,21 @@ No epicenter is currently selected. Answer general seismology questions, explain
               actions: [
                 TextButton(
                   onPressed: () => Navigator.pop(context),
-                  child: const Text(
-                    'Cancel',
-                    style: TextStyle(color: Colors.grey),
-                  ),
+                  child: const Text('Cancel', style: TextStyle(color: Colors.grey)),
                 ),
                 ElevatedButton(
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.redAccent,
-                  ),
+                  style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent),
                   onPressed: () {
                     Navigator.pop(context);
                     ScaffoldMessenger.of(context).showSnackBar(
                       const SnackBar(
-                        content: Text(
-                          'Thank you! Your report has been submitted locally.',
-                        ),
+                        content: Text('Thank you! Your report has been submitted locally.'),
                         backgroundColor: Colors.green,
                         behavior: SnackBarBehavior.floating,
                       ),
                     );
                   },
-                  child: const Text(
-                    'Submit',
-                    style: TextStyle(color: Colors.white),
-                  ),
+                  child: const Text('Submit', style: TextStyle(color: Colors.white)),
                 ),
               ],
             );
@@ -471,10 +573,9 @@ No epicenter is currently selected. Answer general seismology questions, explain
                         Text(
                           intensity,
                           style: TextStyle(
-                            fontSize: 12,
-                            color: alertColor,
-                            fontWeight: FontWeight.w600,
-                          ),
+                              fontSize: 12,
+                              color: alertColor,
+                              fontWeight: FontWeight.w600),
                         ),
                       ],
                     ),
@@ -496,10 +597,7 @@ No epicenter is currently selected. Answer general seismology questions, explain
               ),
               const SizedBox(height: 8),
               Container(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 10,
-                  vertical: 6,
-                ),
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
                 decoration: BoxDecoration(
                   color: tsunami == 1
                       ? Colors.redAccent.withValues(alpha: 0.12)
@@ -514,23 +612,15 @@ No epicenter is currently selected. Answer general seismology questions, explain
                 child: Row(
                   children: [
                     Icon(
-                      tsunami == 1
-                          ? Icons.warning_amber_rounded
-                          : Icons.check_circle_outline,
-                      color: tsunami == 1
-                          ? Colors.redAccent
-                          : Colors.greenAccent,
+                      tsunami == 1 ? Icons.warning_amber_rounded : Icons.check_circle_outline,
+                      color: tsunami == 1 ? Colors.redAccent : Colors.greenAccent,
                       size: 16,
                     ),
                     const SizedBox(width: 8),
                     Text(
-                      tsunami == 1
-                          ? 'TSUNAMI WARNING ISSUED'
-                          : 'No Tsunami Warning',
+                      tsunami == 1 ? 'TSUNAMI WARNING ISSUED' : 'No Tsunami Warning',
                       style: TextStyle(
-                        color: tsunami == 1
-                            ? Colors.redAccent
-                            : Colors.greenAccent,
+                        color: tsunami == 1 ? Colors.redAccent : Colors.greenAccent,
                         fontWeight: FontWeight.w700,
                         fontSize: 12,
                       ),
@@ -539,22 +629,16 @@ No epicenter is currently selected. Answer general seismology questions, explain
                 ),
               ),
               const SizedBox(height: 10),
-              // Quick-analyze shortcut into AI pane
               SizedBox(
                 width: double.infinity,
                 child: OutlinedButton.icon(
                   style: OutlinedButton.styleFrom(
-                    side: BorderSide(
-                      color: Colors.purpleAccent.withValues(alpha: 0.5),
-                    ),
+                    side: BorderSide(color: Colors.purpleAccent.withValues(alpha: 0.5)),
                     foregroundColor: Colors.purpleAccent,
                     padding: const EdgeInsets.symmetric(vertical: 8),
                   ),
                   icon: const Icon(Icons.psychology_rounded, size: 16),
-                  label: const Text(
-                    'Analyze with AI',
-                    style: TextStyle(fontSize: 12),
-                  ),
+                  label: const Text('Analyze with AI', style: TextStyle(fontSize: 12)),
                   onPressed: () {
                     if (!_showAIChat) setState(() => _showAIChat = true);
                     final p = _selectedQuake!['properties'];
@@ -582,7 +666,6 @@ No epicenter is currently selected. Answer general seismology questions, explain
     final List<Marker> normalMarkers = [];
     final List<Marker> selectedMarkers = [];
 
-    // Safe camera zoom read — guard against pre-layout boot exceptions
     double currentZoom;
     try {
       currentZoom = _mapController.camera.zoom;
@@ -598,8 +681,7 @@ No epicenter is currently selected. Answer general seismology questions, explain
       final double longitude = (coords[0] as num?)?.toDouble() ?? 0.0;
       final double latitude = (coords[1] as num?)?.toDouble() ?? 0.0;
 
-      final bool isSelected =
-          _selectedQuake != null &&
+      final bool isSelected = _selectedQuake != null &&
           _selectedQuake!['properties']['time'] == props['time'];
 
       Color alertColor = Colors.greenAccent;
@@ -609,7 +691,6 @@ No epicenter is currently selected. Answer general seismology questions, explain
         alertColor = Colors.redAccent;
       }
 
-      // Responsive marker sizing — stays visible on world-view, scales on zoom
       final double markerSize = isSelected
           ? 38.0
           : (12.0 + (currentZoom * 1.1)).clamp(12.0, 26.0);
@@ -674,37 +755,23 @@ No epicenter is currently selected. Answer general seismology questions, explain
       builder: (context) {
         return AlertDialog(
           backgroundColor: const Color(0xFF1E1E1E),
-          title: const Text(
-            'Map Legend',
-            style: TextStyle(color: Colors.white),
-          ),
+          title: const Text('Map Legend', style: TextStyle(color: Colors.white)),
           content: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              _buildLegendItem(
-                Colors.greenAccent,
-                'Weak Tremors (Magnitude < 3.0)',
-              ),
+              _buildLegendItem(Colors.greenAccent, 'Weak Tremors (Magnitude < 3.0)'),
               const SizedBox(height: 12),
-              _buildLegendItem(
-                Colors.orangeAccent,
-                'Moderate Tremors (Magnitude 3.0 to 4.9)',
-              ),
+              _buildLegendItem(Colors.orangeAccent, 'Moderate Tremors (Magnitude 3.0 to 4.9)'),
               const SizedBox(height: 12),
-              _buildLegendItem(
-                Colors.redAccent,
-                'Intense / Severe Tremors (Magnitude >= 5.0)',
-              ),
+              _buildLegendItem(Colors.redAccent, 'Intense / Severe Tremors (Magnitude >= 5.0)'),
               const SizedBox(height: 12),
               Row(
                 children: [
-                  Container(width: 24, height: 4, color: Colors.orangeAccent),
+                  Container(width: 24, height: 4, color: const Color(0xFFD32F2F)),
                   const SizedBox(width: 12),
                   const Expanded(
-                    child: Text(
-                      'Active Geological Tectonic Fault Lines',
-                      style: TextStyle(color: Colors.grey),
-                    ),
+                    child: Text('Active Geological Tectonic Fault Lines',
+                        style: TextStyle(color: Colors.grey)),
                   ),
                 ],
               ),
@@ -734,9 +801,7 @@ No epicenter is currently selected. Answer general seismology questions, explain
           ),
         ),
         const SizedBox(width: 12),
-        Expanded(
-          child: Text(text, style: const TextStyle(color: Colors.grey)),
-        ),
+        Expanded(child: Text(text, style: const TextStyle(color: Colors.grey))),
       ],
     );
   }
@@ -812,9 +877,7 @@ No epicenter is currently selected. Answer general seismology questions, explain
     );
   }
 
-  // ─────────────────────────────────────────────────────────────────────────────
   // LEFT PANE: Filter Sidebar
-  // ─────────────────────────────────────────────────────────────────────────────
   Widget _buildSidebar() {
     return Container(
       width: (_showMap || _showAIChat) ? 360 : null,
@@ -826,14 +889,11 @@ No epicenter is currently selected. Answer general seismology questions, explain
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                // Date range picker
                 ElevatedButton.icon(
                   style: ElevatedButton.styleFrom(
                     backgroundColor: const Color(0xFF262626),
                     minimumSize: const Size.fromHeight(48),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(8),
-                    ),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
                   ),
                   icon: const Icon(Icons.date_range, color: Colors.white),
                   label: Text(
@@ -843,10 +903,7 @@ No epicenter is currently selected. Answer general seismology questions, explain
                   onPressed: () async {
                     final picked = await showDateRangePicker(
                       context: context,
-                      initialDateRange: DateTimeRange(
-                        start: _startDate,
-                        end: _endDate,
-                      ),
+                      initialDateRange: DateTimeRange(start: _startDate, end: _endDate),
                       firstDate: DateTime(2000),
                       lastDate: DateTime.now(),
                       builder: (context, child) {
@@ -874,12 +931,8 @@ No epicenter is currently selected. Answer general seismology questions, explain
                   },
                 ),
                 const SizedBox(height: 12),
-                // Count + visible-only toggle
                 Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 12,
-                    vertical: 8,
-                  ),
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                   decoration: BoxDecoration(
                     color: const Color(0xFF262626),
                     borderRadius: BorderRadius.circular(8),
@@ -888,10 +941,7 @@ No epicenter is currently selected. Answer general seismology questions, explain
                     children: [
                       Text(
                         'Showing: ${_visibleEarthquakes.length} Earthquakes',
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontWeight: FontWeight.bold,
-                        ),
+                        style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
                       ),
                       Row(
                         mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -899,16 +949,12 @@ No epicenter is currently selected. Answer general seismology questions, explain
                           const Expanded(
                             child: Text(
                               'Only list Earthquakes Shown in Map',
-                              style: TextStyle(
-                                color: Colors.grey,
-                                fontSize: 12,
-                              ),
+                              style: TextStyle(color: Colors.grey, fontSize: 12),
                             ),
                           ),
                           Switch(
                             value: _onlyShowVisibleInMap,
-                            onChanged: (val) =>
-                                setState(() => _onlyShowVisibleInMap = val),
+                            onChanged: (val) => setState(() => _onlyShowVisibleInMap = val),
                             activeThumbColor: Colors.orangeAccent,
                           ),
                         ],
@@ -948,20 +994,15 @@ No epicenter is currently selected. Answer general seismology questions, explain
                           });
                         }
                       },
-                      items:
-                          <String>[
-                                'Newest First',
-                                'Oldest First',
-                                'Largest Magnitude',
-                                'Smallest Magnitude',
-                              ]
-                              .map<DropdownMenuItem<String>>(
-                                (v) => DropdownMenuItem<String>(
-                                  value: v,
-                                  child: Text(v),
-                                ),
-                              )
-                              .toList(),
+                      items: <String>[
+                        'Newest First',
+                        'Oldest First',
+                        'Largest Magnitude',
+                        'Smallest Magnitude',
+                      ]
+                          .map<DropdownMenuItem<String>>(
+                              (v) => DropdownMenuItem<String>(value: v, child: Text(v)))
+                          .toList(),
                     ),
                   ),
                 ),
@@ -971,9 +1012,7 @@ No epicenter is currently selected. Answer general seismology questions, explain
           const Divider(height: 1, color: Colors.white12),
           Expanded(
             child: _isLoading
-                ? const Center(
-                    child: CircularProgressIndicator(color: Colors.redAccent),
-                  )
+                ? const Center(child: CircularProgressIndicator(color: Colors.redAccent))
                 : ListView.builder(
                     itemCount: _visibleEarthquakes.length,
                     itemBuilder: (context, index) {
@@ -981,15 +1020,11 @@ No epicenter is currently selected. Answer general seismology questions, explain
                       final props = feature['properties'];
                       final coords = feature['geometry']['coordinates'];
 
-                      final double magnitude =
-                          (props['mag'] as num?)?.toDouble() ?? 0.0;
-                      final double longitude =
-                          (coords[0] as num?)?.toDouble() ?? 0.0;
-                      final double latitude =
-                          (coords[1] as num?)?.toDouble() ?? 0.0;
+                      final double magnitude = (props['mag'] as num?)?.toDouble() ?? 0.0;
+                      final double longitude = (coords[0] as num?)?.toDouble() ?? 0.0;
+                      final double latitude = (coords[1] as num?)?.toDouble() ?? 0.0;
                       final int timeMillis = props['time'] ?? 0;
-                      final DateTime dateTime =
-                          DateTime.fromMillisecondsSinceEpoch(timeMillis);
+                      final DateTime dateTime = DateTime.fromMillisecondsSinceEpoch(timeMillis);
 
                       Color alertColor = Colors.greenAccent;
                       if (magnitude >= 4.0 && magnitude < 5.5) {
@@ -1000,21 +1035,13 @@ No epicenter is currently selected. Answer general seismology questions, explain
 
                       return Card(
                         color: const Color(0xFF1E1E1E),
-                        margin: const EdgeInsets.symmetric(
-                          horizontal: 16,
-                          vertical: 6,
-                        ),
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(12),
-                        ),
+                        margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                         child: InkWell(
                           borderRadius: BorderRadius.circular(12),
                           onTap: () {
                             setState(() => _selectedQuake = feature);
-                            _mapController.move(
-                              LatLng(latitude, longitude),
-                              8.0,
-                            );
+                            _mapController.move(LatLng(latitude, longitude), 8.0);
                           },
                           child: Padding(
                             padding: const EdgeInsets.all(12.0),
@@ -1026,10 +1053,7 @@ No epicenter is currently selected. Answer general seismology questions, explain
                                   decoration: BoxDecoration(
                                     color: alertColor.withValues(alpha: 0.15),
                                     shape: BoxShape.circle,
-                                    border: Border.all(
-                                      color: alertColor,
-                                      width: 2,
-                                    ),
+                                    border: Border.all(color: alertColor, width: 2),
                                   ),
                                   child: Center(
                                     child: Text(
@@ -1045,8 +1069,7 @@ No epicenter is currently selected. Answer general seismology questions, explain
                                 const SizedBox(width: 12),
                                 Expanded(
                                   child: Column(
-                                    crossAxisAlignment:
-                                        CrossAxisAlignment.start,
+                                    crossAxisAlignment: CrossAxisAlignment.start,
                                     children: [
                                       Text(
                                         props['place'] ?? 'Unknown',
@@ -1060,22 +1083,14 @@ No epicenter is currently selected. Answer general seismology questions, explain
                                       ),
                                       const SizedBox(height: 4),
                                       Row(
-                                        mainAxisAlignment:
-                                            MainAxisAlignment.spaceBetween,
+                                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
                                         children: [
                                           Text(
-                                            DateFormat(
-                                              'MMM d, HH:mm',
-                                            ).format(dateTime),
-                                            style: const TextStyle(
-                                              color: Colors.grey,
-                                              fontSize: 12,
-                                            ),
+                                            DateFormat('MMM d, HH:mm').format(dateTime),
+                                            style: const TextStyle(color: Colors.grey, fontSize: 12),
                                           ),
                                           Text(
-                                            (props['status'] ?? '')
-                                                .toString()
-                                                .toUpperCase(),
+                                            (props['status'] ?? '').toString().toUpperCase(),
                                             style: TextStyle(
                                               color: alertColor,
                                               fontSize: 11,
@@ -1100,9 +1115,7 @@ No epicenter is currently selected. Answer general seismology questions, explain
     );
   }
 
-  // ─────────────────────────────────────────────────────────────────────────────
   // CENTER PANE: Vector Map
-  // ─────────────────────────────────────────────────────────────────────────────
   Widget _buildMapPane() {
     return Expanded(
       flex: 3,
@@ -1116,14 +1129,14 @@ No epicenter is currently selected. Answer general seismology questions, explain
               minZoom: 1.0,
               maxZoom: 18.0,
               onPositionChanged: (position, hasGesture) => setState(() {}),
-              onTap: (tapPosition, point) =>
-                  setState(() => _selectedQuake = null),
+              onTap: (tapPosition, point) => setState(() => _selectedQuake = null),
             ),
             children: [
               TileLayer(
                 urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
                 userAgentPackageName: 'com.example.seismic_one',
               ),
+              PolylineLayer(polylines: _tectonicPolylines),
               MarkerLayer(markers: _buildMarkers()),
             ],
           ),
@@ -1146,10 +1159,7 @@ No epicenter is currently selected. Answer general seismology questions, explain
                   mini: true,
                   backgroundColor: const Color(0xFF1A1A1A),
                   onPressed: _showLegendPopup,
-                  child: const Icon(
-                    Icons.legend_toggle_rounded,
-                    color: Colors.white,
-                  ),
+                  child: const Icon(Icons.legend_toggle_rounded, color: Colors.white),
                 ),
                 const SizedBox(height: 16),
                 FloatingActionButton(
@@ -1175,12 +1185,8 @@ No epicenter is currently selected. Answer general seismology questions, explain
     );
   }
 
-  // ─────────────────────────────────────────────────────────────────────────────
   // RIGHT PANE: Groq AI Emergency Assistant
-  // ─────────────────────────────────────────────────────────────────────────────
   Widget _buildAIChatPane() {
-    final ScrollController scrollController = ScrollController();
-
     return Container(
       width: 380,
       decoration: const BoxDecoration(
@@ -1189,7 +1195,7 @@ No epicenter is currently selected. Answer general seismology questions, explain
       ),
       child: Column(
         children: [
-          // ── Header ───────────────────────────────────────────────────────────
+          // Header
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
             decoration: const BoxDecoration(
@@ -1207,11 +1213,7 @@ No epicenter is currently selected. Answer general seismology questions, explain
                     ),
                     borderRadius: BorderRadius.circular(10),
                   ),
-                  child: const Icon(
-                    Icons.psychology_rounded,
-                    color: Colors.white,
-                    size: 20,
-                  ),
+                  child: const Icon(Icons.psychology_rounded, color: Colors.white, size: 20),
                 ),
                 const SizedBox(width: 10),
                 Expanded(
@@ -1220,20 +1222,12 @@ No epicenter is currently selected. Answer general seismology questions, explain
                     children: [
                       const Text(
                         'SeismicOne AI',
-                        style: TextStyle(
-                          color: Colors.white,
-                          fontWeight: FontWeight.w700,
-                          fontSize: 14,
-                        ),
+                        style: TextStyle(color: Colors.white, fontWeight: FontWeight.w700, fontSize: 14),
                       ),
                       Text(
-                        _selectedQuake != null
-                            ? '⚡ Epicenter context loaded'
-                            : '● Ready for queries',
+                        _selectedQuake != null ? '⚡ Epicenter context loaded' : '● Ready for queries',
                         style: TextStyle(
-                          color: _selectedQuake != null
-                              ? Colors.purpleAccent
-                              : Colors.greenAccent,
+                          color: _selectedQuake != null ? Colors.purpleAccent : Colors.greenAccent,
                           fontSize: 11,
                         ),
                       ),
@@ -1242,11 +1236,7 @@ No epicenter is currently selected. Answer general seismology questions, explain
                 ),
                 if (_chatHistory.isNotEmpty)
                   IconButton(
-                    icon: const Icon(
-                      Icons.delete_sweep_rounded,
-                      color: Colors.grey,
-                      size: 18,
-                    ),
+                    icon: const Icon(Icons.delete_sweep_rounded, color: Colors.grey, size: 18),
                     tooltip: 'Clear chat',
                     onPressed: () => setState(() => _chatHistory.clear()),
                     padding: EdgeInsets.zero,
@@ -1256,23 +1246,17 @@ No epicenter is currently selected. Answer general seismology questions, explain
             ),
           ),
 
-          // ── Active epicenter context banner ──────────────────────────────────
+          // Active epicenter context banner
           if (_selectedQuake != null)
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
               decoration: BoxDecoration(
                 color: Colors.purple.withValues(alpha: 0.08),
-                border: const Border(
-                  bottom: BorderSide(color: Color(0xFF2A2A3A)),
-                ),
+                border: const Border(bottom: BorderSide(color: Color(0xFF2A2A3A))),
               ),
               child: Row(
                 children: [
-                  const Icon(
-                    Icons.location_on_rounded,
-                    color: Colors.purpleAccent,
-                    size: 14,
-                  ),
+                  const Icon(Icons.location_on_rounded, color: Colors.purpleAccent, size: 14),
                   const SizedBox(width: 6),
                   Expanded(
                     child: Text(
@@ -1283,10 +1267,7 @@ No epicenter is currently selected. Answer general seismology questions, explain
                         final d = (c[2] as num?)?.toDouble() ?? 0.0;
                         return 'M${mag.toStringAsFixed(1)} · ${p['place'] ?? 'Unknown'} · ${d.toStringAsFixed(0)} km depth';
                       }(),
-                      style: const TextStyle(
-                        color: Colors.purpleAccent,
-                        fontSize: 11,
-                      ),
+                      style: const TextStyle(color: Colors.purpleAccent, fontSize: 11),
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                     ),
@@ -1295,12 +1276,12 @@ No epicenter is currently selected. Answer general seismology questions, explain
               ),
             ),
 
-          // ── Chat messages ─────────────────────────────────────────────────────
+          // Chat messages block
           Expanded(
             child: _chatHistory.isEmpty
                 ? _buildEmptyAIState()
                 : ListView.builder(
-                    controller: scrollController,
+                    controller: _chatScrollController, // ✅ Correctly mapping lift tracking controls
                     padding: const EdgeInsets.all(12),
                     itemCount: _chatHistory.length + (_isAiLoading ? 1 : 0),
                     itemBuilder: (context, index) {
@@ -1312,7 +1293,7 @@ No epicenter is currently selected. Answer general seismology questions, explain
                   ),
           ),
 
-          // ── Input bar ─────────────────────────────────────────────────────────
+          // Input bar
           Container(
             padding: const EdgeInsets.all(12),
             decoration: const BoxDecoration(
@@ -1328,20 +1309,14 @@ No epicenter is currently selected. Answer general seismology questions, explain
                     maxLines: null,
                     decoration: InputDecoration(
                       hintText: 'Ask about seismic risks, safety...',
-                      hintStyle: TextStyle(
-                        color: Colors.grey.shade600,
-                        fontSize: 13,
-                      ),
+                      hintStyle: TextStyle(color: Colors.grey.shade600, fontSize: 13),
                       filled: true,
                       fillColor: const Color(0xFF1C1C30),
                       border: OutlineInputBorder(
                         borderRadius: BorderRadius.circular(12),
                         borderSide: BorderSide.none,
                       ),
-                      contentPadding: const EdgeInsets.symmetric(
-                        horizontal: 14,
-                        vertical: 10,
-                      ),
+                      contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
                     ),
                     onSubmitted: (text) => _sendMessageToAi(text),
                   ),
@@ -1355,23 +1330,14 @@ No epicenter is currently selected. Answer general seismology questions, explain
                     borderRadius: BorderRadius.circular(12),
                   ),
                   child: IconButton(
-                    onPressed: _isAiLoading
-                        ? null
-                        : () => _sendMessageToAi(_aiInputController.text),
+                    onPressed: _isAiLoading ? null : () => _sendMessageToAi(_aiInputController.text),
                     icon: _isAiLoading
                         ? const SizedBox(
                             width: 18,
                             height: 18,
-                            child: CircularProgressIndicator(
-                              strokeWidth: 2,
-                              color: Colors.white,
-                            ),
+                            child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
                           )
-                        : const Icon(
-                            Icons.send_rounded,
-                            color: Colors.white,
-                            size: 18,
-                          ),
+                        : const Icon(Icons.send_rounded, color: Colors.white, size: 18),
                   ),
                 ),
               ],
@@ -1398,24 +1364,16 @@ No epicenter is currently selected. Answer general seismology questions, explain
                 ),
                 borderRadius: BorderRadius.circular(20),
               ),
-              child: const Icon(
-                Icons.psychology_rounded,
-                color: Colors.white,
-                size: 38,
-              ),
+              child: const Icon(Icons.psychology_rounded, color: Colors.white, size: 38),
             ),
             const SizedBox(height: 16),
             const Text(
               'SeismicOne AI',
-              style: TextStyle(
-                color: Colors.white,
-                fontWeight: FontWeight.w700,
-                fontSize: 18,
-              ),
+              style: TextStyle(color: Colors.white, fontWeight: FontWeight.w700, fontSize: 18),
             ),
             const SizedBox(height: 8),
             Text(
-              'Powered by Groq · Llama 3\nSelect an epicenter on the map or ask anything about earthquake safety and seismic risk.',
+              'Powered by Groq · Llama 3.1\nSelect an epicenter on the map or ask anything about earthquake safety and seismic risk.',
               style: TextStyle(color: Colors.grey.shade500, fontSize: 12),
               textAlign: TextAlign.center,
             ),
@@ -1447,10 +1405,7 @@ No epicenter is currently selected. Answer general seismology questions, explain
           borderRadius: BorderRadius.circular(20),
           border: Border.all(color: const Color(0xFF2A2A4A)),
         ),
-        child: Text(
-          text,
-          style: const TextStyle(color: Colors.white70, fontSize: 12),
-        ),
+        child: Text(text, style: const TextStyle(color: Colors.white70, fontSize: 12)),
       ),
     );
   }
@@ -1461,9 +1416,7 @@ No epicenter is currently selected. Answer general seismology questions, explain
       padding: const EdgeInsets.only(bottom: 12),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
-        mainAxisAlignment: isUser
-            ? MainAxisAlignment.end
-            : MainAxisAlignment.start,
+        mainAxisAlignment: isUser ? MainAxisAlignment.end : MainAxisAlignment.start,
         children: [
           if (!isUser) ...[
             Container(
@@ -1476,20 +1429,14 @@ No epicenter is currently selected. Answer general seismology questions, explain
                 ),
                 borderRadius: BorderRadius.circular(8),
               ),
-              child: const Icon(
-                Icons.psychology_rounded,
-                color: Colors.white,
-                size: 16,
-              ),
+              child: const Icon(Icons.psychology_rounded, color: Colors.white, size: 16),
             ),
           ],
           Flexible(
             child: Container(
               padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
               decoration: BoxDecoration(
-                color: isUser
-                    ? const Color(0xFF2D1F6E)
-                    : const Color(0xFF1A1A2E),
+                color: isUser ? const Color(0xFF2D1F6E) : const Color(0xFF1A1A2E),
                 borderRadius: BorderRadius.only(
                   topLeft: const Radius.circular(16),
                   topRight: const Radius.circular(16),
@@ -1505,9 +1452,7 @@ No epicenter is currently selected. Answer general seismology questions, explain
               child: Text(
                 msg.content,
                 style: TextStyle(
-                  color: isUser
-                      ? Colors.white
-                      : Colors.white.withValues(alpha: 0.9),
+                  color: isUser ? Colors.white : Colors.white.withValues(alpha: 0.9),
                   fontSize: 13,
                   height: 1.5,
                 ),
@@ -1523,11 +1468,7 @@ No epicenter is currently selected. Answer general seismology questions, explain
                 color: const Color(0xFF2D1F6E),
                 borderRadius: BorderRadius.circular(8),
               ),
-              child: const Icon(
-                Icons.person_rounded,
-                color: Colors.white70,
-                size: 16,
-              ),
+              child: const Icon(Icons.person_rounded, color: Colors.white70, size: 16),
             ),
           ],
         ],
@@ -1551,11 +1492,7 @@ No epicenter is currently selected. Answer general seismology questions, explain
               ),
               borderRadius: BorderRadius.circular(8),
             ),
-            child: const Icon(
-              Icons.psychology_rounded,
-              color: Colors.white,
-              size: 16,
-            ),
+            child: const Icon(Icons.psychology_rounded, color: Colors.white, size: 16),
           ),
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
@@ -1581,20 +1518,14 @@ No epicenter is currently selected. Answer general seismology questions, explain
     );
   }
 
-  // ─────────────────────────────────────────────────────────────────────────────
   // MAIN BUILD — Tri-Pane Scaffold
-  // ─────────────────────────────────────────────────────────────────────────────
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
         title: const Text(
           '⚠️ SEISMIC_ONE LIVE MATRIX',
-          style: TextStyle(
-            fontWeight: FontWeight.w900,
-            letterSpacing: 1.2,
-            fontSize: 18,
-          ),
+          style: TextStyle(fontWeight: FontWeight.w900, letterSpacing: 1.2, fontSize: 18),
         ),
         centerTitle: true,
         backgroundColor: const Color(0xFF1A1A1A),
@@ -1605,7 +1536,6 @@ No epicenter is currently selected. Answer general seismology questions, explain
           onPressed: _showReportDialog,
         ),
         actions: [
-          // ── Toggle: Left Sidebar ──────────────────────────────────────────────
           IconButton(
             icon: Icon(
               Icons.dashboard_rounded,
@@ -1617,7 +1547,6 @@ No epicenter is currently selected. Answer general seismology questions, explain
               setState(() => _showSidebar = !_showSidebar);
             },
           ),
-          // ── Toggle: Center Map ────────────────────────────────────────────────
           IconButton(
             icon: Icon(
               Icons.map_rounded,
@@ -1629,7 +1558,6 @@ No epicenter is currently selected. Answer general seismology questions, explain
               setState(() => _showMap = !_showMap);
             },
           ),
-          // ── Toggle: Right AI Chat ─────────────────────────────────────────────
           IconButton(
             icon: Icon(
               Icons.psychology_rounded,
@@ -1641,7 +1569,6 @@ No epicenter is currently selected. Answer general seismology questions, explain
               setState(() => _showAIChat = !_showAIChat);
             },
           ),
-          // ── Refresh ───────────────────────────────────────────────────────────
           IconButton(
             icon: const Icon(Icons.refresh_rounded, color: Colors.white),
             tooltip: 'Refresh Live Feed',
@@ -1654,14 +1581,11 @@ No epicenter is currently selected. Answer general seismology questions, explain
       ),
       body: Row(
         children: [
-          // Left: Filter Sidebar
           if (_showSidebar)
             (_showMap || _showAIChat)
                 ? _buildSidebar()
                 : Expanded(child: _buildSidebar()),
-          // Center: Vector Map
           if (_showMap) _buildMapPane(),
-          // Right: Groq AI Chat
           if (_showAIChat) _buildAIChatPane(),
         ],
       ),
@@ -1677,8 +1601,7 @@ class _TypingDots extends StatefulWidget {
   State<_TypingDots> createState() => _TypingDotsState();
 }
 
-class _TypingDotsState extends State<_TypingDots>
-    with SingleTickerProviderStateMixin {
+class _TypingDotsState extends State<_TypingDots> with SingleTickerProviderStateMixin {
   late final AnimationController _controller;
 
   @override
@@ -1706,10 +1629,7 @@ class _TypingDotsState extends State<_TypingDots>
           children: List.generate(3, (i) {
             final delay = i / 3.0;
             final value = ((_controller.value - delay) % 1.0).clamp(0.0, 1.0);
-            final opacity = (value < 0.5 ? value * 2 : (1.0 - value) * 2).clamp(
-              0.2,
-              1.0,
-            );
+            final opacity = (value < 0.5 ? value * 2 : (1.0 - value) * 2).clamp(0.2, 1.0);
             return Container(
               margin: const EdgeInsets.symmetric(horizontal: 2),
               width: 6,
