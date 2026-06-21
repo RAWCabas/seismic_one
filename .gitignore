@@ -50,3 +50,6 @@ app.*.map.json
 # Sensitive Environment Configuration Keys
 .env
 .env.production
+
+node_modules/
+.git/

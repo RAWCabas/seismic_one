@@ -1,0 +1,9 @@
+{
+    "name": "seismic_one",
+    "version": "1.0.0",
+    "private": true,
+    "dependencies": {},
+    "devDependencies": {
+        "gh-pages": "^6.3.0"
+    }
+}
