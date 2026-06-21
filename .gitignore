@@ -46,3 +46,8 @@ app.*.map.json
 
 # Ignore internal Antigravity IDE agent folders
 .agent/
+
+# Sensitive Environment Configuration Keys
+.env
+.env.production
+

@@ -5,10 +5,9 @@ import 'dart:convert';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:intl/intl.dart';
-import 'package:flutter_dotenv/flutter_dotenv.dart'; // ✅ Managed Environment Security Layer
+import 'package:flutter_dotenv/flutter_dotenv.dart';
 
 Future<void> main() async {
-  // Guard native engine bindings before running async initialization files
   WidgetsFlutterBinding.ensureInitialized();
 
   // Load local environment file completely into application memory before UI mounts
@@ -85,8 +84,7 @@ class _EarthquakeDashboardState extends State<EarthquakeDashboard> {
   bool _showAIChat = true;
 
   // ─── Groq AI Configuration ────────────────────────────────────────────────────
-  // ✅ Key is pulled directly from environment map arrays. Safe from public git scrapers.
-  final String _groqApiKey = dotenv.env['GROQ_API_KEY'] ?? "";
+  String get _groqApiKey => dotenv.env['GROQ_API_KEY'] ?? "";
   final List<ChatMessage> _chatHistory = [];
   final TextEditingController _aiInputController = TextEditingController();
 
@@ -129,6 +127,7 @@ class _EarthquakeDashboardState extends State<EarthquakeDashboard> {
   // ─── USGS GeoJSON Live Fetch ──────────────────────────────────────────────────
   Future<void> _loadTectonicPlates() async {
     try {
+      // ✅ Adjusted to standard forward slash syntax matching asset bundles directly
       final raw = await rootBundle.loadString(
         'assets/json/tectonic_plates.json',
       );
@@ -136,7 +135,7 @@ class _EarthquakeDashboardState extends State<EarthquakeDashboard> {
           json.decode(raw) as Map<String, dynamic>;
       final features = decoded['features'] as List<dynamic>? ?? [];
 
-      List<List<LatLng>> _splitAntimeridianSegments(List<dynamic> coordList) {
+      List<List<LatLng>> splitAntimeridianSegments(List<dynamic> coordList) {
         final segments = <List<LatLng>>[];
         List<LatLng> current = [];
 
@@ -156,15 +155,15 @@ class _EarthquakeDashboardState extends State<EarthquakeDashboard> {
               final lonDiff = (prev.longitude - lon).abs();
 
               if (lonDiff > 180.0) {
-                if (current.length > 0)
+                if (current.isNotEmpty) {
                   segments.add(List<LatLng>.from(current));
+                }
                 current = [point];
               } else {
                 current.add(point);
               }
             }
           } catch (_) {
-            // Skip malformed coordinate pair
             continue;
           }
         }
@@ -184,53 +183,47 @@ class _EarthquakeDashboardState extends State<EarthquakeDashboard> {
         final coords = geometry['coordinates'];
         if (coords == null) continue;
 
-        if (type == 'LineString') {
-          if (coords is List) {
-            final segments = _splitAntimeridianSegments(coords);
-            for (final seg in segments) {
-              if (seg.length > 1) {
-                parsedPolylines.add(
-                  Polyline(
-                    points: seg,
-                    color: const Color(0xFFD32F2F),
-                    strokeWidth: 2.0,
-                  ),
-                );
-              }
+        if (type == 'LineString' && coords is List) {
+          final segments = splitAntimeridianSegments(coords);
+          for (final seg in segments) {
+            if (seg.length > 1) {
+              parsedPolylines.add(
+                Polyline(
+                  points: seg,
+                  color: const Color(0xFFD32F2F).withOpacity(0.40),
+                  strokeWidth: 1.5,
+                ),
+              );
             }
           }
-        } else if (type == 'Polygon') {
-          if (coords is List && coords.isNotEmpty) {
-            final exterior = coords[0] as List<dynamic>;
-            final segments = _splitAntimeridianSegments(exterior);
-            for (final seg in segments) {
-              if (seg.length > 1) {
-                parsedPolylines.add(
-                  Polyline(
-                    points: seg,
-                    color: const Color(0xFFD32F2F),
-                    strokeWidth: 2.0,
-                  ),
-                );
-              }
+        } else if (type == 'Polygon' && coords is List && coords.isNotEmpty) {
+          final exterior = coords[0] as List<dynamic>;
+          final segments = splitAntimeridianSegments(exterior);
+          for (final seg in segments) {
+            if (seg.length > 1) {
+              parsedPolylines.add(
+                Polyline(
+                  points: seg,
+                  color: const Color(0xFFD32F2F).withOpacity(0.40),
+                  strokeWidth: 1.5,
+                ),
+              );
             }
           }
-        } else if (type == 'MultiPolygon') {
-          if (coords is List) {
-            for (final polygon in coords) {
-              if (polygon is List && polygon.isNotEmpty) {
-                final exterior = polygon[0] as List<dynamic>;
-                final segments = _splitAntimeridianSegments(exterior);
-                for (final seg in segments) {
-                  if (seg.length > 1) {
-                    parsedPolylines.add(
-                      Polyline(
-                        points: seg,
-                        color: const Color(0xFFD32F2F),
-                        strokeWidth: 2.0,
-                      ),
-                    );
-                  }
+        } else if (type == 'MultiPolygon' && coords is List) {
+          for (final polygon in coords) {
+            if (polygon is List && polygon.isNotEmpty) {
+              final exterior = polygon[0] as List<dynamic>;
+              final segments = splitAntimeridianSegments(exterior);
+              for (final seg in segments) {
+                if (seg.length > 1) {
+                  parsedPolylines.add(
+                    Polyline(
+                      points: seg,
+                      color: const Color(0xFFD32F2F),
+                      strokeWidth: 2.0,
+                    ),
+                  );
                 }
               }
             }
@@ -321,9 +314,8 @@ class _EarthquakeDashboardState extends State<EarthquakeDashboard> {
     });
 
     _aiInputController.clear();
-    _scrollToBottom(); // Auto-scroll right as user message commits
+    _scrollToBottom();
 
-    // Build a context-aware system prompt from selected epicenter metadata
     final String baseSystemPrompt;
     if (_selectedQuake != null) {
       final props = _selectedQuake!['properties'];
@@ -369,11 +361,10 @@ No epicenter is currently selected. Answer general seismology questions, explain
           'Authorization': 'Bearer $_groqApiKey',
         },
         body: json.encode({
-          'model':
-              'llama-3.1-8b-instant', // ✅ Upgraded to production high-speed engine endpoint
+          'model': 'llama-3.1-8b-instant',
           'messages': [
             {'role': 'system', 'content': baseSystemPrompt},
-            {'role': 'user', 'content': userText.trim()},
+            ..._chatHistory.map((m) => {'role': m.role, 'content': m.content}),
           ],
           'temperature': 0.3,
           'max_tokens': 1024,
@@ -424,11 +415,10 @@ No epicenter is currently selected. Answer general seismology questions, explain
         _isAiLoading = false;
       });
     } finally {
-      _scrollToBottom(); // ✅ Auto-scroll right when response maps finish generating
+      _scrollToBottom();
     }
   }
 
-  // Helper utility to smoothly glide chat list window downwards
   void _scrollToBottom() {
     Future.delayed(const Duration(milliseconds: 120), () {
       if (_chatScrollController.hasClients) {
@@ -1456,8 +1446,7 @@ No epicenter is currently selected. Answer general seismology questions, explain
             child: _chatHistory.isEmpty
                 ? _buildEmptyAIState()
                 : ListView.builder(
-                    controller:
-                        _chatScrollController, // ✅ Correctly mapping lift tracking controls
+                    controller: _chatScrollController,
                     padding: const EdgeInsets.all(12),
                     itemCount: _chatHistory.length + (_isAiLoading ? 1 : 0),
                     itemBuilder: (context, index) {
