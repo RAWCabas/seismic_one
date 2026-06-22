@@ -84,7 +84,12 @@ class _EarthquakeDashboardState extends State<EarthquakeDashboard> {
   bool _showAIChat = true;
 
   // ─── Groq AI Configuration ────────────────────────────────────────────────────
-  String get _groqApiKey => dotenv.env['GROQ_API_KEY'] ?? "";
+  // ———— Groq AI Configuration ————
+  // ———— Groq AI Configuration ————
+  String get _groqApiKey => const String.fromEnvironment('GROQ_KEY') != ""
+      ? const String.fromEnvironment('GROQ_KEY')
+      : dotenv.env['GROQ_API_KEY'] ?? "";
+
   final List<ChatMessage> _chatHistory = [];
   final TextEditingController _aiInputController = TextEditingController();
 
