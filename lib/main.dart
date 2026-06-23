@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:http/http.dart' as http;
 import 'dart:convert';
 import 'package:flutter_map/flutter_map.dart';
@@ -83,12 +84,15 @@ class _EarthquakeDashboardState extends State<EarthquakeDashboard> {
   bool _showMap = true;
   bool _showAIChat = true;
 
-  // ─── Groq AI Configuration ────────────────────────────────────────────────────
   // ———— Groq AI Configuration ————
-  // ———— Groq AI Configuration ————
-  String get _groqApiKey => const String.fromEnvironment('GROQ_KEY') != ""
-      ? const String.fromEnvironment('GROQ_KEY')
-      : dotenv.env['GROQ_API_KEY'] ?? "";
+  String get _groqApiKey {
+    // If running live on GitHub Pages web, use the secure production fallback token directly
+    if (kIsWeb) {
+      return "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";
+    }
+    // If running locally on my machine, look for the standard local configuration file
+    return dotenv.env['GROQ_API_KEY'] ?? "";
+  }
 
   final List<ChatMessage> _chatHistory = [];
   final TextEditingController _aiInputController = TextEditingController();
