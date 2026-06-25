@@ -364,27 +364,19 @@ No epicenter is currently selected. Answer general seismology questions, explain
 
     try {
       final response = await http.post(
-        Uri.parse('https://api.groq.com/openai/v1/chat/completions'),
+        Uri.parse('https://seismic-backend-1wkm.onrender.com/api/analyze'),
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': 'Bearer $_groqApiKey',
         },
         body: json.encode({
-          'model': 'llama-3.1-8b-instant',
-          'messages': [
-            {'role': 'system', 'content': baseSystemPrompt},
-            ..._chatHistory.map((m) => {'role': m.role, 'content': m.content}),
-          ],
-          'temperature': 0.3,
-          'max_tokens': 1024,
+          'prompt': userText.trim(),
         }),
       );
 
       if (response.statusCode == 200) {
         final responseData = json.decode(response.body);
-        final aiText =
-            responseData['choices'][0]['message']['content'] ??
-            'Unable to analyze telemetry.';
+        final aiText = responseData['choices'][0]['message']['content'].toString();
+        
         setState(() {
           _chatHistory.add(
             ChatMessage(
@@ -397,14 +389,19 @@ No epicenter is currently selected. Answer general seismology questions, explain
         });
       } else {
         final errorBody = json.decode(response.body);
-        final errorMsg =
-            errorBody['error']?['message'] ?? 'HTTP ${response.statusCode}';
+        String errorMsg = 'HTTP ${response.statusCode}';
+        if (errorBody['error'] is Map) {
+          errorMsg = errorBody['error']['message']?.toString() ?? errorMsg;
+        } else if (errorBody['error'] != null) {
+          errorMsg = errorBody['error'].toString();
+        }
+        
         setState(() {
           _chatHistory.add(
             ChatMessage(
               role: 'assistant',
               content:
-                  '⚠️ Groq API error: $errorMsg\n\nVerify your API key configuration parameters.',
+                  '⚠️ Backend error: $errorMsg\n\nThe Render server may be starting up — please retry in a moment.',
               timestamp: DateTime.now(),
             ),
           );
