@@ -7,6 +7,7 @@ import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:intl/intl.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
+import 'package:flutter_markdown/flutter_markdown.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -85,15 +86,6 @@ class _EarthquakeDashboardState extends State<EarthquakeDashboard> {
   bool _showAIChat = true;
 
   // ———— Groq AI Configuration ————
-  String get _groqApiKey {
-    // If running live on GitHub Pages web, use the secure production fallback token directly
-    if (kIsWeb) {
-      return "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";
-    }
-    // If running locally on my machine, look for the standard local configuration file
-    return dotenv.env['GROQ_API_KEY'] ?? "";
-  }
-
   final List<ChatMessage> _chatHistory = [];
   final TextEditingController _aiInputController = TextEditingController();
 
@@ -199,7 +191,7 @@ class _EarthquakeDashboardState extends State<EarthquakeDashboard> {
               parsedPolylines.add(
                 Polyline(
                   points: seg,
-                  color: const Color(0xFFD32F2F).withOpacity(0.40),
+                  color: const Color(0xFFD32F2F).withValues(alpha: 0.40),
                   strokeWidth: 1.5,
                 ),
               );
@@ -213,7 +205,7 @@ class _EarthquakeDashboardState extends State<EarthquakeDashboard> {
               parsedPolylines.add(
                 Polyline(
                   points: seg,
-                  color: const Color(0xFFD32F2F).withOpacity(0.40),
+                  color: const Color(0xFFD32F2F).withValues(alpha: 0.40),
                   strokeWidth: 1.5,
                 ),
               );
@@ -370,6 +362,7 @@ No epicenter is currently selected. Answer general seismology questions, explain
         },
         body: json.encode({
           'prompt': userText.trim(),
+          'system_prompt': baseSystemPrompt,
         }),
       );
 
@@ -1654,14 +1647,31 @@ No epicenter is currently selected. Answer general seismology questions, explain
                       : Colors.white.withValues(alpha: 0.06),
                 ),
               ),
-              child: Text(
-                msg.content,
-                style: TextStyle(
-                  color: isUser
-                      ? Colors.white
-                      : Colors.white.withValues(alpha: 0.9),
-                  fontSize: 13,
-                  height: 1.5,
+              child: MarkdownBody(
+                data: msg.content,
+                styleSheet: MarkdownStyleSheet(
+                  p: TextStyle(
+                    color: isUser
+                        ? Colors.white
+                        : Colors.white.withValues(alpha: 0.9),
+                    fontSize: 13,
+                    height: 1.5,
+                  ),
+                  strong: TextStyle(
+                    color: isUser
+                        ? Colors.white
+                        : Colors.white.withValues(alpha: 0.9),
+                    fontSize: 13,
+                    height: 1.5,
+                    fontWeight: FontWeight.bold,
+                  ),
+                  listBullet: TextStyle(
+                    color: isUser
+                        ? Colors.white
+                        : Colors.white.withValues(alpha: 0.9),
+                    fontSize: 13,
+                    height: 1.5,
+                  ),
                 ),
               ),
             ),
